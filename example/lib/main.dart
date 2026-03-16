@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
 import 'package:gallery_saver/gallery_saver.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
   runApp(const MyApp());
@@ -215,17 +216,38 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
     if (_recordedFilePath == null) return;
 
     try {
-      final success = await GallerySaver.saveVideo(_recordedFilePath!);
-      if (success == true) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Video saved to gallery')),
-          );
-        }
+      // Request storage permission
+      PermissionStatus status;
+      if (Platform.isIOS) {
+        status = await Permission.photosAddOnly.request();
       } else {
+        status = await Permission.storage.request();
+      }
+
+      if (status.isGranted || status.isLimited) {
+        final success = await GallerySaver.saveVideo(_recordedFilePath!);
+        if (success == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Video saved to gallery')),
+            );
+          }
+        } else {
+          setState(() {
+            _errorMessage = 'Failed to save video to gallery';
+          });
+        }
+      } else if (status.isDenied) {
         setState(() {
-          _errorMessage = 'Failed to save video to gallery';
+          _errorMessage =
+              'Permission denied. Please allow access to save videos.';
         });
+      } else if (status.isPermanentlyDenied) {
+        setState(() {
+          _errorMessage =
+              'Permission permanently denied. Please enable in Settings.';
+        });
+        await openAppSettings();
       }
     } catch (e) {
       setState(() {

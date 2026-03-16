@@ -1,5 +1,7 @@
 PODS:
   - Flutter (1.0.0)
+  - gallery_saver (0.0.1):
+    - Flutter
   - integration_test (0.0.1):
     - Flutter
   - waffle_camera_plugin (0.0.1):
@@ -7,12 +9,15 @@ PODS:
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
+  - gallery_saver (from `.symlinks/plugins/gallery_saver/ios`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - waffle_camera_plugin (from `.symlinks/plugins/waffle_camera_plugin/ios`)
 
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
+  gallery_saver:
+    :path: ".symlinks/plugins/gallery_saver/ios"
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
   waffle_camera_plugin:
@@ -20,6 +25,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
+  gallery_saver: 1d68d1818df11b1afa84a97d1a530463753e92e3
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   waffle_camera_plugin: d697bffbaf2928972c8704005297147917c84390
 
