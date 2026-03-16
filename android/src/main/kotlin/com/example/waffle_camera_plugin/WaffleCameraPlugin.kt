@@ -8,7 +8,9 @@ import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -20,6 +22,7 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.view.TextureRegistry
+import java.io.File
 import java.util.concurrent.Executors
 
 class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
@@ -36,7 +39,8 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         var textureEntry: TextureRegistry.SurfaceTextureEntry? = null,
         var camera: Camera? = null,
         var videoCapture: VideoCapture<Recorder>? = null,
-        var preview: Preview? = null
+        var preview: Preview? = null,
+        var recording: Recording? = null
     )
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -51,6 +55,10 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "createCamera" -> createCamera(call, result)
             "initializeCamera" -> initializeCamera(call, result)
             "disposeCamera" -> disposeCamera(call, result)
+            "startRecording" -> startRecording(call, result)
+            "pauseRecording" -> pauseRecording(call, result)
+            "resumeRecording" -> resumeRecording(call, result)
+            "stopRecording" -> stopRecording(call, result)
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
             else -> result.notImplemented()
         }
@@ -169,28 +177,109 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }, ContextCompat.getMainExecutor(activity))
     }
 
-    private fun disposeCamera(call: MethodCall, result: Result) {
+     private fun disposeCamera(call: MethodCall, result: Result) {
+         val cameraId = call.argument<Int>("cameraId")
+         val cameraInstance = cameras[cameraId] ?: run {
+             result.success(null)
+             return
+         }
+         
+         cameraInstance.camera?.let { camera ->
+             val activity = this.activity
+             if (activity != null) {
+                 val cameraProvider = ProcessCameraProvider.getInstance(activity).get()
+                 cameraProvider.unbind(cameraInstance.preview, cameraInstance.videoCapture)
+             }
+         }
+         
+         cameraInstance.textureEntry?.release()
+         cameras.remove(cameraId)
+         
+         result.success(null)
+     }
+
+    private fun startRecording(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
         val cameraInstance = cameras[cameraId] ?: run {
-            result.success(null)
+            result.error("INVALID_CAMERA", "Camera not found", null)
             return
         }
-        
-        cameraInstance.camera?.let { camera ->
-            val activity = this.activity
-            if (activity != null) {
-                val cameraProvider = ProcessCameraProvider.getInstance(activity).get()
-                cameraProvider.unbind(cameraInstance.preview, cameraInstance.videoCapture)
-            }
+        val videoCapture = cameraInstance.videoCapture ?: run {
+            result.error("NOT_INITIALIZED", "Camera not initialized", null)
+            return
         }
-        
-        cameraInstance.textureEntry?.release()
-        cameras.remove(cameraId)
-        
-        result.success(null)
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        try {
+            val file = File(activity.cacheDir, "recording_${System.currentTimeMillis()}.mp4")
+            val outputOptions = FileOutputOptions.Builder(file).build()
+
+            val recording = videoCapture.output
+                .prepareRecording(activity, outputOptions)
+                .start(ContextCompat.getMainExecutor(activity)) { event -> }
+
+            cameraInstance.recording = recording
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("RECORDING_ERROR", e.message, null)
+        }
     }
 
-    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    private fun pauseRecording(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId]
+
+        if (cameraInstance?.recording != null) {
+            try {
+                cameraInstance.recording?.pause()
+                result.success(null)
+            } catch (e: Exception) {
+                result.error("PAUSE_ERROR", e.message, null)
+            }
+        } else {
+            result.error("NOT_RECORDING", "No active recording", null)
+        }
+    }
+
+    private fun resumeRecording(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId]
+
+        if (cameraInstance?.recording != null) {
+            try {
+                cameraInstance.recording?.resume()
+                result.success(null)
+            } catch (e: Exception) {
+                result.error("RESUME_ERROR", e.message, null)
+            }
+        } else {
+            result.error("NOT_RECORDING", "No active recording", null)
+        }
+    }
+
+    private fun stopRecording(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId]
+        val recording = cameraInstance?.recording
+
+        if (recording != null) {
+            try {
+                recording.stop()
+                cameraInstance?.recording = null
+                val file = File(activity?.cacheDir, "recording_${System.currentTimeMillis()}.mp4")
+                result.success(file.absolutePath)
+            } catch (e: Exception) {
+                result.error("STOP_ERROR", e.message, null)
+            }
+        } else {
+            result.error("NOT_RECORDING", "No active recording", null)
+        }
+    }
+
+     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         flutterPluginBinding = null
     }
