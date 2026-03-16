@@ -1,0 +1,21 @@
+android/:
+total 48
+drwxr-xr-x   9 ketanchoyal  staff   288 Mar 16 14:13 .
+drwxr-xr-x  19 ketanchoyal  staff   608 Mar 16 14:13 ..
+-rw-r--r--   1 ketanchoyal  staff   102 Mar  3 09:43 .gitignore
+-rw-r--r--   1 ketanchoyal  staff  1575 Mar 16 14:13 build.gradle.kts
+-rw-r--r--   1 ketanchoyal  staff    97 Mar 16 14:13 local.properties
+-rw-r--r--   1 ketanchoyal  staff    42 Mar 16 14:13 settings.gradle
+-rw-r--r--   1 ketanchoyal  staff    42 Mar 16 14:13 settings.gradle.kts
+drwxr-xr-x   4 ketanchoyal  staff   128 Mar 16 14:13 src
+-rw-r--r--   1 ketanchoyal  staff  1489 Mar 16 14:13 waffle_camera_plugin_android.iml
+
+ios/:
+total 16
+drwxr-xr-x   7 ketanchoyal  staff   224 Mar 16 14:13 .
+drwxr-xr-x  19 ketanchoyal  staff   608 Mar 16 14:13 ..
+-rw-r--r--   1 ketanchoyal  staff   419 Mar  3 09:43 .gitignore
+drwxr-xr-x   3 ketanchoyal  staff    96 Mar 16 14:13 Assets
+drwxr-xr-x   3 ketanchoyal  staff    96 Mar 16 14:13 Classes
+drwxr-xr-x   3 ketanchoyal  staff    96 Mar 16 14:13 Resources
+-rw-r--r--   1 ketanchoyal  staff  1311 Mar 16 14:13 waffle_camera_plugin.podspec
