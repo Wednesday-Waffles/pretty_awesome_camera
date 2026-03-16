@@ -131,7 +131,11 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance.videoOutput = videoOutput
             
             if let textureRegistry = textureRegistry {
-                let textureId = textureRegistry.register(CameraPreviewTexture(session: captureSession))
+                guard let texture = CameraPreviewTexture(session: captureSession) else {
+                    result(FlutterError(code: "TEXTURE_ERROR", message: "Failed to create preview texture", details: nil))
+                    return
+                }
+                let textureId = textureRegistry.register(texture)
                 cameraInstance.textureId = textureId
             }
             
@@ -253,16 +257,40 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     }
 }
 
-class CameraPreviewTexture: NSObject, FlutterTexture {
-    let session: AVCaptureSession
+class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate {
+    var latestPixelBuffer: CVPixelBuffer?
+    let captureSession: AVCaptureSession
+    let videoDataOutput: AVCaptureVideoDataOutput
+    let videoDataOutputQueue: DispatchQueue
     
-    init(session: AVCaptureSession) {
-        self.session = session
+    init?(session: AVCaptureSession) {
+        self.captureSession = session
+        self.videoDataOutput = AVCaptureVideoDataOutput()
+        self.videoDataOutputQueue = DispatchQueue(label: "VideoDataOutputQueue")
+        
         super.init()
+        
+        videoDataOutput.setSampleBufferDelegate(self, queue: videoDataOutputQueue)
+        videoDataOutput.alwaysDiscardsLateVideoFrames = true
+        
+        if session.canAddOutput(videoDataOutput) {
+            session.addOutput(videoDataOutput)
+        } else {
+            return nil
+        }
+    }
+    
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            latestPixelBuffer = pixelBuffer
+        }
     }
     
     func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-        return nil
+        guard let pixelBuffer = latestPixelBuffer else {
+            return nil
+        }
+        return Unmanaged.passRetained(pixelBuffer)
     }
 }
 
