@@ -147,12 +147,18 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     else -> CameraSelector.DEFAULT_BACK_CAMERA
                 }
                 
-                val preview = Preview.Builder()
-                    .build()
-                cameraInstance.preview = preview
-                
                 val textureEntry = binding.textureRegistry.createSurfaceTexture()
                 cameraInstance.textureEntry = textureEntry
+                
+                val preview = Preview.Builder()
+                    .build()
+                    .also {
+                        it.setSurfaceProvider { request ->
+                            val surface = android.view.Surface(textureEntry.surfaceTexture())
+                            request.provideSurface(surface, executor) {}
+                        }
+                    }
+                cameraInstance.preview = preview
                 
                 val recorder = Recorder.Builder()
                     .setExecutor(executor)
