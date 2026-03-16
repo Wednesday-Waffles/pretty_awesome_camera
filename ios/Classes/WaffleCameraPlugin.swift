@@ -125,6 +125,12 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             let videoOutput = AVCaptureMovieFileOutput()
             if captureSession.canAddOutput(videoOutput) {
                 captureSession.addOutput(videoOutput)
+                
+                if let connection = videoOutput.connection(with: .video) {
+                    if connection.isVideoOrientationSupported {
+                        connection.videoOrientation = .portrait
+                    }
+                }
             }
             
             cameraInstance.captureSession = captureSession
@@ -133,7 +139,8 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             if let textureRegistry = textureRegistry {
                 guard let texture = CameraPreviewTexture(
                     session: captureSession,
-                    textureRegistry: textureRegistry
+                    textureRegistry: textureRegistry,
+                    lensPosition: cameraInstance.lensPosition
                 ) else {
                     result(FlutterError(code: "TEXTURE_ERROR", message: "Failed to create preview texture", details: nil))
                     return
@@ -268,10 +275,12 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
     let videoDataOutput: AVCaptureVideoDataOutput
     let videoDataOutputQueue: DispatchQueue
     weak var textureRegistry: FlutterTextureRegistry?
+    var lensPosition: AVCaptureDevice.Position = .back
     
-    init?(session: AVCaptureSession, textureRegistry: FlutterTextureRegistry) {
+    init?(session: AVCaptureSession, textureRegistry: FlutterTextureRegistry, lensPosition: AVCaptureDevice.Position) {
         self.captureSession = session
         self.textureRegistry = textureRegistry
+        self.lensPosition = lensPosition
         self.videoDataOutput = AVCaptureVideoDataOutput()
         self.videoDataOutputQueue = DispatchQueue(label: "VideoDataOutputQueue")
         
@@ -282,6 +291,15 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
         
         if session.canAddOutput(videoDataOutput) {
             session.addOutput(videoDataOutput)
+            
+            if let connection = videoDataOutput.connection(with: .video) {
+                if connection.isVideoOrientationSupported {
+                    connection.videoOrientation = .portrait
+                }
+                if connection.isVideoMirroringSupported && lensPosition == .front {
+                    connection.isVideoMirrored = true
+                }
+            }
         } else {
             return nil
         }
