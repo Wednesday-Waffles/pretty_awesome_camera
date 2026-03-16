@@ -131,11 +131,15 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance.videoOutput = videoOutput
             
             if let textureRegistry = textureRegistry {
-                guard let texture = CameraPreviewTexture(session: captureSession) else {
+                guard let texture = CameraPreviewTexture(
+                    session: captureSession,
+                    textureRegistry: textureRegistry
+                ) else {
                     result(FlutterError(code: "TEXTURE_ERROR", message: "Failed to create preview texture", details: nil))
                     return
                 }
                 let textureId = textureRegistry.register(texture)
+                texture.textureId = textureId
                 cameraInstance.textureId = textureId
             }
             
@@ -259,12 +263,15 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
 
 class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate {
     var latestPixelBuffer: CVPixelBuffer?
+    var textureId: Int64 = 0
     let captureSession: AVCaptureSession
     let videoDataOutput: AVCaptureVideoDataOutput
     let videoDataOutputQueue: DispatchQueue
+    weak var textureRegistry: FlutterTextureRegistry?
     
-    init?(session: AVCaptureSession) {
+    init?(session: AVCaptureSession, textureRegistry: FlutterTextureRegistry) {
         self.captureSession = session
+        self.textureRegistry = textureRegistry
         self.videoDataOutput = AVCaptureVideoDataOutput()
         self.videoDataOutputQueue = DispatchQueue(label: "VideoDataOutputQueue")
         
@@ -283,6 +290,7 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
             latestPixelBuffer = pixelBuffer
+            textureRegistry?.textureFrameAvailable(textureId)
         }
     }
     
