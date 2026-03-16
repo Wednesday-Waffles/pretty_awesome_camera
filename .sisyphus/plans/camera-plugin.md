@@ -547,7 +547,7 @@ Max Concurrent: 6 (Wave 2)
   - Message: `chore(android): add CameraX dependencies and permissions`
   - Files: `android/build.gradle, android/src/main/AndroidManifest.xml, android/src/main/kotlin/...`
 
-- [ ] 7. Android Native - Camera Initialization and Preview
+- [x] 7. Android Native - Camera Initialization and Preview
 
   **What to do**:
   - Implement camera initialization in plugin class:
@@ -620,7 +620,7 @@ Max Concurrent: 6 (Wave 2)
   - Message: `feat(android): implement camera initialization and texture preview`
   - Files: `android/src/main/kotlin/.../*.kt`
 
-- [ ] 8. Android Native - Video Recording with Pause/Resume
+- [x] 8. Android Native - Video Recording with Pause/Resume
 
   **What to do**:
   - Implement recording in Android plugin:
@@ -699,7 +699,7 @@ Max Concurrent: 6 (Wave 2)
   - Message: `feat(android): implement video recording with pause/resume`
   - Files: `android/src/main/kotlin/.../*.kt`
 
-- [ ] 9. iOS Native - Project Setup and Permissions
+- [x] 9. iOS Native - Project Setup and Permissions
 
   **What to do**:
   - Update `ios/waffle_camera_plugin.podspec` with dependencies
@@ -752,7 +752,7 @@ Max Concurrent: 6 (Wave 2)
   - Message: `chore(ios): add AVFoundation dependencies and permissions`
   - Files: `ios/*.podspec, example/ios/Runner/Info.plist, ios/Classes/*.swift`
 
-- [ ] 10. iOS Native - Camera Initialization and Preview
+- [x] 10. iOS Native - Camera Initialization and Preview
 
   **What to do**:
   - Implement camera initialization in Swift:
@@ -823,7 +823,7 @@ Max Concurrent: 6 (Wave 2)
   - Message: `feat(ios): implement camera initialization and texture preview`
   - Files: `ios/Classes/*.swift`
 
-- [ ] 11. iOS Native - Video Recording with Pause/Resume
+- [x] 11. iOS Native - Video Recording with Pause/Resume
 
   **What to do**:
   - Implement recording in Swift:

@@ -13,6 +13,9 @@ export 'src/camera_description.dart';
 export 'src/resolution_preset.dart';
 export 'src/recording_state.dart';
 
+// Widgets
+export 'camera_preview.dart';
+
 class WaffleCameraPlugin {
   Future<String?> getPlatformVersion() {
     return WaffleCameraPluginPlatform.instance.getPlatformVersion();
