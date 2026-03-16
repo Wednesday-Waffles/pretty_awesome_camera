@@ -271,8 +271,38 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
       _selectedCameraIndex = (_selectedCameraIndex! + 1) % _cameras.length;
     });
 
-    // Re-initialize with new camera
     _initializeCamera();
+  }
+
+  Future<void> _switchCameraAndContinueRecording() async {
+    if (_cameras.length < 2 || _cameraId == null) return;
+
+    // Stop current recording
+    String? firstPartPath;
+    if (_isRecording) {
+      firstPartPath = await _platform.stopRecording(_cameraId!);
+    }
+
+    // Dispose current camera
+    await _disposeCamera();
+
+    // Switch to next camera
+    setState(() {
+      _selectedCameraIndex = (_selectedCameraIndex! + 1) % _cameras.length;
+    });
+
+    // Initialize new camera
+    await _initializeCamera();
+
+    // Start new recording
+    if (_cameraId != null) {
+      await _platform.startRecording(_cameraId!);
+      setState(() {
+        _isRecording = true;
+        _isPaused = false;
+        _recordedFilePath = firstPartPath;
+      });
+    }
   }
 
   @override

@@ -48,13 +48,15 @@ The `ResolutionPreset` enum exists in Dart, but it's **not actually applied** to
 ```dart
 /// Video quality configuration for recording.
 class VideoQualityConfig {
-  final ResolutionPreset resolution;
+  final int width;             // REQUIRED - e.g., 1920
+  final int height;            // REQUIRED - e.g., 1080
   final int bitrate;           // REQUIRED - bits per second (e.g., 5000000 = 5 Mbps)
   final int frameRate;         // REQUIRED - e.g., 30, 60
   final VideoCodec codec;      // h264 or hevc (defaults to h264)
 
   const VideoQualityConfig({
-    required this.resolution,
+    required this.width,
+    required this.height,
     required this.bitrate,
     required this.frameRate,
     this.codec = VideoCodec.h264,
@@ -67,12 +69,12 @@ enum VideoCodec {
 }
 ```
 
-### API Change
+### API Change (BREAKING)
 ```dart
 // Before
 Future<int> createCamera(CameraDescription camera, ResolutionPreset preset)
 
-// After
+// After (BREAKING - old signature removed)
 Future<int> createCamera(
   CameraDescription camera, 
   VideoQualityConfig qualityConfig  // Required comprehensive config
@@ -107,10 +109,38 @@ Future<int> createCamera(
 | Decision | Choice |
 |----------|--------|
 | Scope | Full (resolution + bitrate + frame rate + codec) |
+| Resolution | Pixel dimensions (width/height) - NOT enum |
 | API Timing | At camera creation |
-| Required params | bitrate, frameRate required |
+| Required params | width, height, bitrate, frameRate required |
+| Codec default | h264 |
+| Bitrate unit | Bits per second (bps) |
+| Breaking change | YES - old createCamera signature removed |
+| Unsupported fallback | Auto-fallback to best available |
 | Bug fix | Include event state emissions fix |
 | Test strategy | TDD |
+
+## Guardrails (from Metis review)
+
+### MUST NOT (Scope Creep Prevention):
+- Audio quality configuration
+- Photo capture features
+- Streaming/preview quality control
+- Quality change during recording
+- File format selection (MP4/MOV)
+- HDR or special video modes
+- Adaptive/automatic bitrate
+
+### MUST (Required):
+- Validate width/height/bitrate/frameRate are positive integers
+- Auto-fallback when unsupported codec/resolution
+- Emit recording state events (idle → recording → paused → idle)
+- Update all existing tests
+
+## Edge Cases to Handle
+1. Device doesn't support requested resolution → Fallback to closest
+2. HEVC not available → Auto-fallback to H.264
+3. Frame rate not supported → Fallback to closest supported
+4. Invalid params (negative, zero) → Throw ArgumentError
 
 ---
 
