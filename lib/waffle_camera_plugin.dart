@@ -7,6 +7,12 @@
 
 import 'waffle_camera_plugin_platform_interface.dart';
 
+// Type definitions and exceptions
+export 'src/camera_exception.dart';
+export 'src/camera_description.dart';
+export 'src/resolution_preset.dart';
+export 'src/recording_state.dart';
+
 class WaffleCameraPlugin {
   Future<String?> getPlatformVersion() {
     return WaffleCameraPluginPlatform.instance.getPlatformVersion();
