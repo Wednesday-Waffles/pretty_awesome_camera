@@ -4,6 +4,9 @@ import android.app.Activity
 import android.content.Context
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.MediaExtractor
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
@@ -23,6 +26,9 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.view.TextureRegistry
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.Executors
 
@@ -43,7 +49,10 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         var camera: Camera? = null,
         var videoCapture: VideoCapture<Recorder>? = null,
         var preview: Preview? = null,
-        var recording: Recording? = null
+        var recording: Recording? = null,
+        var segmentFiles: MutableList<File> = mutableListOf(),
+        var currentSegmentIndex: Int = 0,
+        var isSwitching: Boolean = false
     )
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -62,6 +71,10 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "pauseRecording" -> pauseRecording(call, result)
             "resumeRecording" -> resumeRecording(call, result)
             "stopRecording" -> stopRecording(call, result)
+            "isMultiCamSupported" -> isMultiCamSupported(result)
+            "canSwitchCamera" -> canSwitchCamera(call, result)
+            "switchCamera" -> switchCamera(call, result)
+            "canSwitchCurrentCamera" -> canSwitchCurrentCamera(result)
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
             else -> result.notImplemented()
         }
@@ -224,7 +237,13 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
 
         try {
-            val file = File(activity.cacheDir, "recording_${System.currentTimeMillis()}.mp4")
+            cameraInstance.segmentFiles.clear()
+            cameraInstance.currentSegmentIndex = 0
+            
+            val file = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_0.mp4")
+            cameraInstance.segmentFiles.add(file)
+            cameraInstance.currentSegmentIndex = 1
+            
             val outputOptions = FileOutputOptions.Builder(file).build()
 
             val recording = videoCapture.output
@@ -280,13 +299,280 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             try {
                 recording.stop()
                 cameraInstance?.recording = null
-                val file = File(activity?.cacheDir, "recording_${System.currentTimeMillis()}.mp4")
-                result.success(file.absolutePath)
+                
+                if (cameraInstance?.segmentFiles?.isEmpty() == true) {
+                    result.error("NO_RECORDING", "No recording segments found", null)
+                    return
+                }
+                
+                if (cameraInstance?.segmentFiles?.size == 1) {
+                    val outputFile = cameraInstance.segmentFiles[0]
+                    cameraInstance.segmentFiles.clear()
+                    cameraInstance.currentSegmentIndex = 0
+                    result.success(outputFile.absolutePath)
+                    return
+                }
+                
+                GlobalScope.launch(Dispatchers.IO) {
+                    try {
+                        val mergedFile = mergeSegments(cameraInstance.segmentFiles)
+                        cleanupSegmentFiles(cameraInstance.segmentFiles)
+                        cameraInstance.segmentFiles.clear()
+                        cameraInstance.currentSegmentIndex = 0
+                        result.success(mergedFile.absolutePath)
+                    } catch (e: Exception) {
+                        cleanupSegmentFiles(cameraInstance.segmentFiles)
+                        cameraInstance.segmentFiles.clear()
+                        cameraInstance.currentSegmentIndex = 0
+                        result.error("MERGE_ERROR", e.message, null)
+                    }
+                }
             } catch (e: Exception) {
+                cleanupSegmentFiles(cameraInstance?.segmentFiles ?: mutableListOf())
+                cameraInstance?.segmentFiles?.clear()
+                cameraInstance?.currentSegmentIndex = 0
                 result.error("STOP_ERROR", e.message, null)
             }
         } else {
             result.error("NOT_RECORDING", "No active recording", null)
+        }
+    }
+
+    private fun isMultiCamSupported(result: Result) {
+        result.success(false)
+    }
+
+    private fun canSwitchCamera(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId]
+        
+        if (cameraInstance == null) {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+        
+        val canSwitch = cameraInstance.recording != null && !cameraInstance.isSwitching
+        result.success(canSwitch)
+    }
+
+    private fun canSwitchCurrentCamera(result: Result) {
+        for (instance in cameras.values) {
+            if (instance.recording != null && !instance.isSwitching) {
+                result.success(true)
+                return
+            }
+        }
+        result.success(false)
+    }
+
+    private fun switchCamera(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+
+        if (cameraInstance.recording == null) {
+            result.error("NOT_RECORDING", "Camera not currently recording", null)
+            return
+        }
+
+        if (cameraInstance.isSwitching) {
+            result.error("SWITCH_IN_PROGRESS", "Camera switch already in progress", null)
+            return
+        }
+
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        try {
+            cameraInstance.isSwitching = true
+            
+            cameraInstance.recording?.stop()
+            cameraInstance.recording = null
+            
+            val targetLensDirection = cameraInstance.cameraDescription?.get("lensDirection") as? String
+            val newLensDirection = if (targetLensDirection == "front") "back" else "front"
+            
+            cameraInstance.cameraDescription = cameraInstance.cameraDescription?.toMutableMap()?.apply {
+                put("lensDirection", newLensDirection)
+            }
+            
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
+            cameraProviderFuture.addListener({
+                try {
+                    val cameraProvider = cameraProviderFuture.get()
+                    
+                    val cameraSelector = when (newLensDirection) {
+                        "front" -> CameraSelector.DEFAULT_FRONT_CAMERA
+                        else -> CameraSelector.DEFAULT_BACK_CAMERA
+                    }
+                    
+                    cameraProvider.unbindAll()
+                    
+                    val recorder = Recorder.Builder()
+                        .setExecutor(executor)
+                        .build()
+                    val videoCapture = VideoCapture.withOutput(recorder)
+                    cameraInstance.videoCapture = videoCapture
+                    
+                    val preview = Preview.Builder()
+                        .setTargetRotation(android.view.Surface.ROTATION_0)
+                        .build()
+                        .also {
+                            val textureEntry = cameraInstance.textureEntry
+                            if (textureEntry != null) {
+                                it.setSurfaceProvider { request ->
+                                    val surface = android.view.Surface(textureEntry.surfaceTexture())
+                                    request.provideSurface(surface, executor) {}
+                                }
+                            }
+                        }
+                    cameraInstance.preview = preview
+                    
+                    val camera = cameraProvider.bindToLifecycle(
+                        activity as LifecycleOwner,
+                        cameraSelector,
+                        preview,
+                        videoCapture
+                    )
+                    cameraInstance.camera = camera
+                    
+                    val segmentFile = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_${cameraInstance.currentSegmentIndex}.mp4")
+                    cameraInstance.currentSegmentIndex++
+                    cameraInstance.segmentFiles.add(segmentFile)
+                    
+                    val outputOptions = FileOutputOptions.Builder(segmentFile).build()
+                    val recording = videoCapture.output
+                        .prepareRecording(activity, outputOptions)
+                        .withAudioEnabled()
+                        .start(ContextCompat.getMainExecutor(activity)) { event -> }
+                    
+                    cameraInstance.recording = recording
+                    cameraInstance.isSwitching = false
+                    result.success(null)
+                } catch (e: Exception) {
+                    cameraInstance.isSwitching = false
+                    result.error("SWITCH_ERROR", e.message, null)
+                }
+            }, ContextCompat.getMainExecutor(activity))
+        } catch (e: Exception) {
+            cameraInstance.isSwitching = false
+            result.error("SWITCH_ERROR", e.message, null)
+        }
+    }
+
+    private fun mergeSegments(segmentFiles: List<File>): File {
+        if (segmentFiles.isEmpty()) {
+            throw IllegalArgumentException("No segment files to merge")
+        }
+
+        val activity = this.activity ?: throw IllegalStateException("Activity not available")
+        val outputFile = File(activity.cacheDir, "merged_${System.currentTimeMillis()}.mp4")
+        
+        val muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        
+        try {
+            var videoTrackIndex = -1
+            var audioTrackIndex = -1
+            var totalDuration = 0L
+            var muxerStarted = false
+            
+            for (segmentFile in segmentFiles) {
+                val extractor = MediaExtractor()
+                extractor.setDataSource(segmentFile.absolutePath)
+                
+                val trackCount = extractor.trackCount
+                for (i in 0 until trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                    
+                    if (mime.startsWith("video/")) {
+                        if (videoTrackIndex < 0) {
+                            videoTrackIndex = muxer.addTrack(format)
+                        }
+                    } else if (mime.startsWith("audio/")) {
+                        if (audioTrackIndex < 0) {
+                            audioTrackIndex = muxer.addTrack(format)
+                        }
+                    }
+                }
+                
+                if (!muxerStarted && (videoTrackIndex >= 0 || audioTrackIndex >= 0)) {
+                    muxer.start()
+                    muxerStarted = true
+                }
+                
+                for (i in 0 until trackCount) {
+                    val format = extractor.getTrackFormat(i)
+                    val mime = format.getString(MediaFormat.KEY_MIME) ?: ""
+                    
+                    if ((mime.startsWith("video/") && videoTrackIndex >= 0) ||
+                        (mime.startsWith("audio/") && audioTrackIndex >= 0)) {
+                        extractor.selectTrack(i)
+                        val trackIndex = if (mime.startsWith("video/")) videoTrackIndex else audioTrackIndex
+                        copyTrack(extractor, muxer, trackIndex)
+                    }
+                }
+                
+                extractor.release()
+                totalDuration += (segmentFile.length() / 1000)
+            }
+            
+            muxer.stop()
+            muxer.release()
+            
+            return outputFile
+        } catch (e: Exception) {
+            try {
+                muxer.stop()
+            } catch (e2: Exception) {
+            }
+            try {
+                muxer.release()
+            } catch (e2: Exception) {
+            }
+            if (outputFile.exists()) {
+                outputFile.delete()
+            }
+            throw e
+        }
+    }
+
+    private fun copyTrack(extractor: MediaExtractor, muxer: MediaMuxer, trackIndex: Int) {
+        val bufferSize = 256 * 1024
+        val buffer = android.media.MediaCodec.BufferInfo()
+        val byteBuffer = android.nio.ByteBuffer.allocate(bufferSize)
+        
+        while (true) {
+            val sampleSize = extractor.readSampleData(byteBuffer, 0)
+            
+            if (sampleSize < 0) {
+                break
+            }
+            
+            buffer.presentationTimeUs = extractor.sampleTime
+            buffer.size = sampleSize
+            buffer.offset = 0
+            buffer.flags = extractor.sampleFlags
+            
+            byteBuffer.position(0)
+            byteBuffer.limit(sampleSize)
+            muxer.writeSampleData(trackIndex, byteBuffer, buffer)
+            extractor.advance()
+        }
+    }
+
+    private fun cleanupSegmentFiles(segmentFiles: List<File>) {
+        for (file in segmentFiles) {
+            try {
+                if (file.exists()) {
+                    file.delete()
+                }
+            } catch (e: Exception) {
+            }
         }
     }
 

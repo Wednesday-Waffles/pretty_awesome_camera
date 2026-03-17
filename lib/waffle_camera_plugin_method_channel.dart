@@ -5,6 +5,7 @@ import 'src/camera_description.dart';
 import 'src/camera_exception.dart';
 import 'src/recording_state.dart';
 import 'src/resolution_preset.dart';
+import 'src/switching_capability.dart';
 import 'waffle_camera_plugin_platform_interface.dart';
 
 /// An implementation of [WaffleCameraPluginPlatform] that uses method channels.
@@ -15,6 +16,9 @@ class MethodChannelWaffleCameraPlugin extends WaffleCameraPluginPlatform {
 
   /// Event channel for recording state changes.
   late EventChannel _recordingStateEventChannel;
+
+  /// The switching capability detector instance.
+  late final SwitchingCapability _switchingCapability = SwitchingCapability();
 
   @override
   Future<String?> getPlatformVersion() async {
@@ -183,5 +187,81 @@ class MethodChannelWaffleCameraPlugin extends WaffleCameraPluginPlatform {
             message: error.toString(),
           );
         });
+  }
+
+  @override
+  Future<bool> canSwitchCamera(int cameraId) async {
+    try {
+      final canSwitch = await methodChannel.invokeMethod<bool>(
+        'canSwitchCamera',
+        {'cameraId': cameraId},
+      );
+      return canSwitch ?? false;
+    } on PlatformException catch (e) {
+      throw CameraException(
+        code: e.code,
+        message: e.message ?? 'Failed to check if camera can switch',
+      );
+    }
+  }
+
+  @override
+  Future<void> switchCamera(int cameraId) async {
+    try {
+      await methodChannel.invokeMethod<void>('switchCamera', {
+        'cameraId': cameraId,
+      });
+    } on PlatformException catch (e) {
+      throw CameraException(
+        code: e.code,
+        message: e.message ?? 'Failed to switch camera',
+      );
+    }
+  }
+
+  @override
+  Future<bool> get canSwitchCurrentCamera async {
+    try {
+      final canSwitch = await methodChannel.invokeMethod<bool>(
+        'canSwitchCurrentCamera',
+      );
+      return canSwitch ?? false;
+    } on PlatformException catch (e) {
+      throw CameraException(
+        code: e.code,
+        message: e.message ?? 'Failed to check if current camera can switch',
+      );
+    }
+  }
+
+  @override
+  Future<bool> isMultiCamSupported() async {
+    try {
+      final supported = await methodChannel.invokeMethod<bool>(
+        'isMultiCamSupported',
+      );
+      return supported ?? false;
+    } on PlatformException catch (e) {
+      throw CameraException(
+        code: e.code,
+        message: e.message ?? 'Failed to detect MultiCam support',
+      );
+    }
+  }
+
+  @override
+  Future<String> getSwitchingPath() async {
+    try {
+      final path = await _switchingCapability.detectedPath;
+      return path.name;
+    } catch (e) {
+      if (e is CameraException) {
+        rethrow;
+      }
+      throw CameraException(
+        code: 'path_detection_failed',
+        message: 'Failed to detect switching path: $e',
+      );
+    }
   }
 }

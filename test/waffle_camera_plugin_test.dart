@@ -57,6 +57,31 @@ class MockWaffleCameraPluginPlatform
   Stream<RecordingState> onRecordingStateChanged(int cameraId) {
     throw UnimplementedError();
   }
+
+  @override
+  Future<bool> canSwitchCamera(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> switchCamera(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> get canSwitchCurrentCamera {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> isMultiCamSupported() {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<String> getSwitchingPath() {
+    throw UnimplementedError();
+  }
 }
 
 class ConcreteWaffleCameraPluginPlatform extends WaffleCameraPluginPlatform {
@@ -102,6 +127,31 @@ class ConcreteWaffleCameraPluginPlatform extends WaffleCameraPluginPlatform {
 
   @override
   Stream<RecordingState> onRecordingStateChanged(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> canSwitchCamera(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> switchCamera(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> get canSwitchCurrentCamera {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<bool> isMultiCamSupported() {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<String> getSwitchingPath() {
     throw UnimplementedError();
   }
 }

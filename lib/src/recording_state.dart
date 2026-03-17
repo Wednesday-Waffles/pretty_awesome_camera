@@ -8,4 +8,7 @@ enum RecordingState {
 
   /// Camera is recording but paused.
   paused,
+
+  /// Camera is switching to another camera during recording.
+  switching,
 }

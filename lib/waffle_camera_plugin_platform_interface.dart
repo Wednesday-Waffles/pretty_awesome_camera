@@ -3,6 +3,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 import 'src/camera_description.dart';
 import 'src/recording_state.dart';
 import 'src/resolution_preset.dart';
+import 'src/switching_path.dart';
 import 'waffle_camera_plugin_method_channel.dart';
 
 abstract class WaffleCameraPluginPlatform extends PlatformInterface {
@@ -78,5 +79,55 @@ abstract class WaffleCameraPluginPlatform extends PlatformInterface {
     throw UnimplementedError(
       'onRecordingStateChanged() has not been implemented.',
     );
+  }
+
+  /// Checks if the camera with the given ID can be switched during recording.
+  ///
+  /// Returns true if the camera supports switching, false otherwise.
+  /// Throws [CameraException] if the camera is not initialized.
+  Future<bool> canSwitchCamera(int cameraId) {
+    throw UnimplementedError('canSwitchCamera() has not been implemented.');
+  }
+
+  /// Switches to the camera with the given ID during recording.
+  ///
+  /// This method allows switching to a different camera without stopping the recording.
+  /// Throws [CameraException] with code 'invalidState' if not currently recording.
+  /// Throws [CameraException] with code 'switchInProgress' if a switch is already in progress.
+  Future<void> switchCamera(int cameraId) {
+    throw UnimplementedError('switchCamera() has not been implemented.');
+  }
+
+  /// Convenience getter to check if the current camera can be switched.
+  ///
+  /// This is a helper method that checks if camera switching is currently possible.
+  /// Returns true if a camera switch can be initiated, false otherwise.
+  /// Throws [CameraException] if no camera is currently active.
+  Future<bool> get canSwitchCurrentCamera {
+    throw UnimplementedError(
+      'canSwitchCurrentCamera() has not been implemented.',
+    );
+  }
+
+  /// Detects if the device supports the optimized camera switching path.
+  ///
+  /// On iOS, this checks if AVCaptureMultiCamSession.isMultiCamSupported is true.
+  /// On Android, this returns false as v4.1 uses fallback path only.
+  ///
+  /// Returns true if optimized path is supported, false otherwise.
+  /// Throws [CameraException] if capability detection fails.
+  Future<bool> isMultiCamSupported() {
+    throw UnimplementedError('isMultiCamSupported() has not been implemented.');
+  }
+
+  /// Gets the detected camera switching path for this device.
+  ///
+  /// This determines which implementation strategy is used: optimized path
+  /// for supported devices or fallback segment-merge path for others.
+  ///
+  /// Returns the detected [SwitchingPath] as a string for platform communication.
+  /// Throws [CameraException] if path detection fails.
+  Future<String> getSwitchingPath() {
+    throw UnimplementedError('getSwitchingPath() has not been implemented.');
   }
 }

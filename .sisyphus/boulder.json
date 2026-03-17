@@ -1,9 +1,10 @@
 {
-  "active_plan": "/Users/ketanchoyal/CascadeProjects/waffle_camera_plugin/.sisyphus/plans/camera-plugin.md",
-  "started_at": "2026-03-16T18:52:43.913Z",
+  "active_plan": "/Users/ketanchoyal/CascadeProjects/waffle_camera_plugin/.sisyphus/plans/seamless-camera-switching.md",
+  "started_at": "2026-03-17T00:54:26.428Z",
   "session_ids": [
-    "ses_30826c0c1ffeKk6izrCw87fzTq"
+    "ses_306beff88ffepIjvSNnutpJjo3"
   ],
-  "plan_name": "camera-plugin",
-  "agent": "atlas"
+  "plan_name": "seamless-camera-switching",
+  "agent": "atlas",
+  "worktree_path": "/Users/ketanchoyal/CascadeProjects/waffle_camera_plugin"
 }

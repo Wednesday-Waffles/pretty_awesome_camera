@@ -2,10 +2,12 @@
 
 ## TL;DR
 
-> **Quick Summary**: Add full video quality control (resolution, bitrate, frame rate, codec) to the camera plugin with pixel-based resolution, auto-fallback for unsupported settings, and fix the recording state event bug.
+> **Quick Summary**: Add full video quality control (quality preset enum, bitrate, frame rate, codec) to the camera plugin with auto-fallback for unsupported settings, and fix the recording state event bug.
 > 
 > **Deliverables**:
-> - New `VideoQualityConfig` class with width/height/bitrate/frameRate/codec
+> - New `VideoQualityConfig` class with quality/bitrate/frameRate/codec
+> - New `VideoQuality` enum (sd, hd, fullHd, ultraHd)
+> - New `VideoCodec` enum (h264, hevc)
 > - Updated `createCamera()` API (breaking change)
 > - Android CameraX quality configuration
 > - iOS AVFoundation quality configuration
@@ -26,7 +28,7 @@ Add option for video quality in the camera plugin.
 ### Interview Summary
 **Key Discussions**:
 - Current `ResolutionPreset` enum exists but is NOT applied on native platforms
-- User wants FULL control: resolution (as pixels), bitrate, frame rate, codec
+- User wants FULL control: quality preset enum, bitrate, frame rate, codec
 - Quality set at camera creation with required parameters
 - Auto-fallback when device doesn't support requested settings
 - Fix recording state event emissions bug
@@ -40,7 +42,7 @@ Add option for video quality in the camera plugin.
 
 ### Metis Review
 **Identified Gaps** (addressed):
-- Resolution as pixel dimensions (not enum): User confirmed
+- Quality as enum (sd, hd, fullHd, ultraHd): User confirmed
 - Breaking API change: User approved
 - Auto-fallback behavior: User confirmed
 - Bitrate units in bps: User confirmed
@@ -50,11 +52,12 @@ Add option for video quality in the camera plugin.
 ## Work Objectives
 
 ### Core Objective
-Implement comprehensive video quality configuration for camera recording with pixel-based resolution, required bitrate/frameRate, optional codec selection, and fix the recording state event bug.
+Implement comprehensive video quality configuration for camera recording with quality preset enum, required bitrate/frameRate, optional codec selection, and fix the recording state event bug.
 
 ### Concrete Deliverables
-- `lib/src/video_quality_config.dart` - New config class
-- `lib/src/video_codec.dart` - New codec enum
+- `lib/src/video_quality.dart` - Quality preset enum (sd, hd, fullHd, ultraHd)
+- `lib/src/video_codec.dart` - Codec enum (h264, hevc)
+- `lib/src/video_quality_config.dart` - Config class
 - Updated `lib/waffle_camera_plugin_platform_interface.dart`
 - Updated `lib/waffle_camera_plugin_method_channel.dart`
 - Updated `android/.../WaffleCameraPlugin.kt`
@@ -70,8 +73,9 @@ Implement comprehensive video quality configuration for camera recording with pi
 - [ ] Recording state events emitted correctly (idle → recording → paused → idle)
 
 ### Must Have
-- `VideoQualityConfig` class with required width/height/bitrate/frameRate
+- `VideoQuality` enum (sd, hd, fullHd, ultraHd)
 - `VideoCodec` enum (h264, hevc)
+- `VideoQualityConfig` class with required quality/bitrate/frameRate
 - Quality applied on both Android and iOS
 - Recording state events working
 - Auto-fallback for unsupported settings
@@ -110,9 +114,11 @@ Evidence saved to `.sisyphus/evidence/task-{N}-{scenario-slug}.{ext}`.
 ### Parallel Execution Waves
 
 ```
-Wave 1 (Foundation - Dart types + tests, can run in parallel):
-├── Task 1: VideoCodec enum + tests [quick]
-├── Task 2: VideoQualityConfig class + tests [quick]
+Wave 1 (Foundation - Dart types):
+├── Task 1: VideoQuality + VideoCodec enums + tests [quick]
+└── Task 2: VideoQualityConfig class + tests [quick]
+
+Wave 1b (Dart API - after Wave 1):
 └── Task 3: Update platform interface + method channel [quick]
 
 Wave 2 (Android implementation):
@@ -139,7 +145,8 @@ Wave FINAL (Verification - 4 parallel):
 
 ### Dependency Matrix
 
-- **1, 2, 3**: No dependencies (foundation, parallel)
+- **1, 2**: No dependencies (parallel in Wave 1)
+- **3**: Depends on 1, 2 (Wave 1b)
 - **4**: Depends on 3
 - **5**: Depends on 4
 - **6**: Depends on 5
@@ -163,17 +170,21 @@ Wave FINAL (Verification - 4 parallel):
 
 ## TODOs
 
-- [ ] 1. Create VideoCodec enum with tests (TDD)
+- [ ] 1. Create VideoQuality and VideoCodec enums with tests (TDD)
 
   **What to do**:
+  - Write failing tests for `VideoQuality` enum in `test/src/video_quality_test.dart`
+  - Create `lib/src/video_quality.dart` with values: `sd` (480p), `hd` (720p), `fullHd` (1080p), `ultraHd` (4K)
+  - Add `toJson()` and `fromJson()` methods for platform channel serialization
+  - Add `dimensions` getter returning `(int width, int height)`
   - Write failing tests for `VideoCodec` enum in `test/src/video_codec_test.dart`
   - Create `lib/src/video_codec.dart` with `h264` and `hevc` values
-  - Add `toJson()` and `fromJson()` methods for platform channel serialization
-  - Ensure tests pass
+  - Add `toJson()` and `fromJson()` methods
+  - Ensure all tests pass
 
   **Must NOT do**:
-  - Add additional codecs beyond h264/hevc
-  - Add any quality-related logic
+  - Add additional quality levels or codecs
+  - Add any quality-related logic beyond enum definition
 
   **Recommended Agent Profile**:
   - **Category**: `quick`
@@ -191,32 +202,34 @@ Wave FINAL (Verification - 4 parallel):
   - `lib/src/camera_description.dart` - Pattern for toJson/fromJson
 
   **Acceptance Criteria**:
-  - [ ] Test file created: `test/src/video_codec_test.dart`
-  - [ ] Enum file created: `lib/src/video_codec.dart`
+  - [ ] Test files created: `test/src/video_quality_test.dart`, `test/src/video_codec_test.dart`
+  - [ ] Enum files created: `lib/src/video_quality.dart`, `lib/src/video_codec.dart`
+  - [ ] `flutter test test/src/video_quality_test.dart` → PASS
   - [ ] `flutter test test/src/video_codec_test.dart` → PASS
 
   **QA Scenarios**:
   ```
-  Scenario: VideoCodec serialization works correctly
+  Scenario: VideoQuality and VideoCodec serialization works correctly
     Tool: Bash
     Steps:
-      1. Run `flutter test test/src/video_codec_test.dart`
-    Expected Result: All tests pass (test toJson returns 'h264'/'hevc', fromJson creates correct enum)
-    Evidence: .sisyphus/evidence/task-01-codec-test.txt
+      1. Run `flutter test test/src/video_quality_test.dart`
+      2. Run `flutter test test/src/video_codec_test.dart`
+    Expected Result: All tests pass (test toJson returns correct strings, fromJson creates correct enums)
+    Evidence: .sisyphus/evidence/task-01-enum-tests.txt
   ```
 
   **Commit**: YES
-  - Message: `feat(camera): add VideoCodec enum`
-  - Files: `lib/src/video_codec.dart`, `test/src/video_codec_test.dart`
+  - Message: `feat(camera): add VideoQuality and VideoCodec enums`
+  - Files: `lib/src/video_quality.dart`, `lib/src/video_codec.dart`, `test/src/video_quality_test.dart`, `test/src/video_codec_test.dart`
 
 - [ ] 2. Create VideoQualityConfig class with tests (TDD)
 
   **What to do**:
   - Write failing tests for `VideoQualityConfig` in `test/src/video_quality_config_test.dart`
   - Create `lib/src/video_quality_config.dart` with:
-    - Required fields: `width` (int), `height` (int), `bitrate` (int), `frameRate` (int)
+    - Required fields: `quality` (VideoQuality), `bitrate` (int), `frameRate` (int)
     - Optional field: `codec` (VideoCodec, default h264)
-    - Constructor validation (positive integers)
+    - Constructor validation (positive bitrate/frameRate)
     - `toJson()` and `fromJson()` methods
     - `copyWith()` method
     - Equality and hashCode
@@ -241,6 +254,7 @@ Wave FINAL (Verification - 4 parallel):
 
   **References**:
   - `lib/src/camera_description.dart:15-45` - Pattern for toJson/fromJson and validation
+  - `lib/src/video_quality.dart` - Quality enum to reference
   - `lib/src/video_codec.dart` - Codec enum to reference
 
   **Acceptance Criteria**:
@@ -294,8 +308,8 @@ Wave FINAL (Verification - 4 parallel):
   - **Skills**: []
 
   **Parallelization**:
-  - **Can Run In Parallel**: YES (with Tasks 1, 2)
-  - **Parallel Group**: Wave 1
+  - **Can Run In Parallel**: NO
+  - **Parallel Group**: Wave 1b (sequential after Wave 1)
   - **Blocks**: Task 4, Task 7
   - **Blocked By**: Task 1, Task 2
 
@@ -343,7 +357,6 @@ Wave FINAL (Verification - 4 parallel):
   - **Category**: `unspecified-high`
     - Reason: Platform-specific implementation requiring Android/CameraX knowledge
   - **Skills**: [`android-mcp`]
-    - `android-mcp`: May be useful for testing on Android emulator
 
   **Parallelization**:
   - **Can Run In Parallel**: NO (depends on Task 3)
@@ -354,7 +367,6 @@ Wave FINAL (Verification - 4 parallel):
   **References**:
   - `android/.../WaffleCameraPlugin.kt:34-35` - Event channel/sink declarations (unused)
   - `android/.../WaffleCameraPlugin.kt:211-239` - startRecording/stopRecording (need event emissions)
-  - `ios/Classes/WaffleCameraPlugin.swift:328-340` - iOS RecordingStateStreamHandler pattern
 
   **Acceptance Criteria**:
   - [ ] Event channel created per camera in `initializeCamera()`
@@ -363,13 +375,21 @@ Wave FINAL (Verification - 4 parallel):
 
   **QA Scenarios**:
   ```
-  Scenario: Recording state events emitted correctly on Android
-    Tool: Bash (Android emulator required)
-    Preconditions: Android emulator running
+  Scenario: Android recording state events emitted correctly
+    Tool: Bash (requires Android emulator)
+    Preconditions: Android emulator running with camera support
     Steps:
-      1. Run `flutter test integration_test/camera_android_test.dart`
-    Expected Result: Tests verify event sequence (idle → recording → paused → idle)
+      1. cd example && flutter test integration_test/camera_android_test.dart
+      2. Verify test output shows event sequence assertions passing
+    Expected Result: Tests pass, event sequence (idle → recording → paused → idle) verified
     Evidence: .sisyphus/evidence/task-04-android-events.txt
+
+  Scenario: Android build succeeds with event changes
+    Tool: Bash
+    Steps:
+      1. cd android && ./gradlew build
+    Expected Result: Build exits with code 0, no compilation errors
+    Evidence: .sisyphus/evidence/task-04-android-build.txt
   ```
 
   **Commit**: YES
@@ -380,15 +400,16 @@ Wave FINAL (Verification - 4 parallel):
 
   **What to do**:
   - Store `VideoQualityConfig` in `CameraInstance` data class when `createCamera()` is called
-  - In `initializeCamera()`:
-    - Parse quality config from stored data
-    - Configure `Recorder.Builder()` with:
-      - Bitrate via `setBitRate()` or similar
-      - Frame rate via `setTargetFrameRate()`
-    - Select closest resolution using `QualitySelector` with fallback
-  - Handle codec selection (H.264 default, HEVC if requested and available)
-  - Implement auto-fallback when exact quality not available
-  - Fix `stopRecording()` to return actual file path (current bug: creates new timestamp)
+  - Create quality mapping from `VideoQuality` enum to CameraX `Quality`:
+    - `sd` → Quality.SD (or lowest available)
+    - `hd` → Quality.HD (720p)
+    - `fullHd` → Quality.FHD (1080p)
+    - `ultraHd` → Quality.UHD (4K)
+  - Configure `Recorder.Builder()` with bitrate
+  - Use `QualitySelector.from(quality)` with fallback strategy
+  - Set frame rate via `setTargetFrameRate()`
+  - Handle codec selection (H.264 default, HEVC if requested)
+  - Fix `stopRecording()` to return actual file path (current bug)
 
   **Must NOT do**:
   - Add audio configuration
@@ -397,42 +418,38 @@ Wave FINAL (Verification - 4 parallel):
 
   **Recommended Agent Profile**:
   - **Category**: `deep`
-    - Reason: Complex CameraX API integration with quality mapping logic
   - **Skills**: [`android-mcp`, `flutter-expert`]
-    - `android-mcp`: For testing on emulator
-    - `flutter-expert`: For Flutter plugin patterns
 
   **Parallelization**:
-  - **Can Run In Parallel**: YES (with Task 7 after Task 4)
-  - **Parallel Group**: Wave 2 (after Task 4)
+  - **Can Run In Parallel**: YES (with Task 7)
+  - **Parallel Group**: Wave 2
   - **Blocks**: Task 6
   - **Blocked By**: Task 4
 
-  **References**:
-  - `android/.../WaffleCameraPlugin.kt:39-47` - CameraInstance data class (add qualityConfig)
-  - `android/.../WaffleCameraPlugin.kt:104-119` - createCamera (store config)
-  - `android/.../WaffleCameraPlugin.kt:164-168` - Recorder.Builder (add quality config)
-  - CameraX docs: `QualitySelector`, `Recorder.Builder.setBitRate()`, `VideoCapture`
-
   **Acceptance Criteria**:
   - [ ] Quality config stored per camera instance
-  - [ ] Bitrate applied to recorder
-  - [ ] Frame rate applied to video capture
-  - [ ] Resolution mapped to closest supported
-  - [ ] Codec selection works (H.264/HEVC)
-  - [ ] `./gradlew test` passes
+  - [ ] VideoQuality enum mapped to CameraX Quality
+  - [ ] Bitrate, frame rate, codec applied
 
   **QA Scenarios**:
   ```
-  Scenario: Android recording uses specified quality
-    Tool: Bash (Android emulator)
-    Preconditions: Android emulator running
+  Scenario: Android recording uses specified quality preset
+    Tool: Bash (requires Android emulator)
+    Preconditions: Android emulator running with camera support
     Steps:
-      1. Record video with VideoQualityConfig(width: 1920, height: 1080, bitrate: 8000000, frameRate: 30)
-      2. Stop recording and get file path
-      3. Verify file exists and has content
-    Expected Result: Video file created with approximately correct properties
+      1. Run example app with VideoQualityConfig(quality: VideoQuality.fullHd, bitrate: 8000000, frameRate: 30)
+      2. Start and stop recording
+      3. Verify file exists at returned path
+    Expected Result: Video file created, path returned successfully
     Evidence: .sisyphus/evidence/task-05-android-quality.txt
+
+  Scenario: Android quality fallback works
+    Tool: Bash (requires Android emulator)
+    Steps:
+      1. Request ultraHd quality on device that may not support it
+      2. Verify recording still succeeds (fallback applied)
+    Expected Result: Recording succeeds with fallback quality
+    Evidence: .sisyphus/evidence/task-05-android-fallback.txt
   ```
 
   **Commit**: YES
@@ -443,46 +460,42 @@ Wave FINAL (Verification - 4 parallel):
 
   **What to do**:
   - Update `example/lib/main.dart` to use new `VideoQualityConfig` API
-  - Add quality selector UI (dropdown for preset qualities)
-  - Verify example app builds: `flutter build apk --debug`
-  - Verify example runs on emulator
+  - Add quality selector UI (dropdown for presets)
+  - Verify example builds: `flutter build apk --debug`
 
   **Must NOT do**:
   - Add complex UI (simple dropdown is enough)
-  - Add new features beyond quality selection
 
   **Recommended Agent Profile**:
   - **Category**: `unspecified-high`
-    - Reason: Example app update and verification
   - **Skills**: [`flutter-expert`, `android-mcp`]
-    - `flutter-expert`: Flutter widget development
-    - `android-mcp`: Testing on emulator
 
   **Parallelization**:
-  - **Can Run In Parallel**: YES (with Task 9 after respective platform tasks)
-  - **Parallel Group**: Wave 2 (after Task 5)
+  - **Can Run In Parallel**: YES (with Task 9)
+  - **Parallel Group**: Wave 2
   - **Blocks**: Task 10
   - **Blocked By**: Task 5
-
-  **References**:
-  - `example/lib/main.dart` - Current example app
-  - `lib/src/video_quality_config.dart` - New API to use
 
   **Acceptance Criteria**:
   - [ ] Example app updated with VideoQualityConfig
   - [ ] Quality selector UI functional
   - [ ] `flutter build apk --debug` succeeds
-  - [ ] App runs on Android emulator
 
   **QA Scenarios**:
   ```
-  Scenario: Example app builds and runs on Android
+  Scenario: Example app builds for Android
     Tool: Bash
     Steps:
       1. cd example && flutter build apk --debug
-      2. Verify build succeeds with exit code 0
-    Expected Result: APK created successfully
+    Expected Result: Build exits with code 0, APK created at example/build/app/outputs/flutter-apk/app-debug.apk
     Evidence: .sisyphus/evidence/task-06-android-build.txt
+
+  Scenario: Example app uses VideoQualityConfig API
+    Tool: Bash
+    Steps:
+      1. grep -n "VideoQualityConfig" example/lib/main.dart
+    Expected Result: Returns at least one match showing VideoQualityConfig usage
+    Evidence: .sisyphus/evidence/task-06-api-usage.txt
   ```
 
   **Commit**: YES
@@ -493,12 +506,10 @@ Wave FINAL (Verification - 4 parallel):
 
   **What to do**:
   - Store reference to `RecordingStateStreamHandler` in `CameraInstance`
-  - Create method to emit state changes in the handler
   - Wire up `AVCaptureFileOutputRecordingDelegate` callbacks:
     - `fileOutputDidStartRecording` → emit `recording`
     - `fileOutputDidFinishRecording` → emit `idle`
   - Update `pauseRecording()` and `resumeRecording()` to emit states
-  - Pass handler reference to camera instance for state updates
 
   **Must NOT do**:
   - Change quality configuration (separate task)
@@ -506,19 +517,13 @@ Wave FINAL (Verification - 4 parallel):
 
   **Recommended Agent Profile**:
   - **Category**: `unspecified-high`
-    - Reason: Platform-specific Swift/AVFoundation implementation
   - **Skills**: []
 
   **Parallelization**:
-  - **Can Run In Parallel**: YES (with Task 4 after Task 3)
+  - **Can Run In Parallel**: YES (with Task 4)
   - **Parallel Group**: Wave 3
   - **Blocks**: Task 8
   - **Blocked By**: Task 3
-
-  **References**:
-  - `ios/Classes/WaffleCameraPlugin.swift:323-326` - AVCaptureFileOutputRecordingDelegate (empty)
-  - `ios/Classes/WaffleCameraPlugin.swift:328-340` - RecordingStateStreamHandler
-  - `ios/Classes/WaffleCameraPlugin.swift:13-20` - CameraInstance struct
 
   **Acceptance Criteria**:
   - [ ] Delegate methods emit correct states
@@ -527,13 +532,21 @@ Wave FINAL (Verification - 4 parallel):
 
   **QA Scenarios**:
   ```
-  Scenario: Recording state events emitted correctly on iOS
-    Tool: Bash (iOS simulator required)
-    Preconditions: iOS simulator running
+  Scenario: iOS recording state events emitted correctly
+    Tool: Bash (requires iOS simulator)
+    Preconditions: iOS simulator running with camera support
     Steps:
-      1. Run `flutter test integration_test/camera_ios_test.dart`
-    Expected Result: Tests verify event sequence (idle → recording → paused → idle)
+      1. cd example && flutter test integration_test/camera_ios_test.dart
+      2. Verify test output shows event sequence assertions passing
+    Expected Result: Tests pass, event sequence (idle → recording → paused → idle) verified
     Evidence: .sisyphus/evidence/task-07-ios-events.txt
+
+  Scenario: iOS build succeeds with event changes
+    Tool: Bash
+    Steps:
+      1. cd example && flutter build ios --no-codesign
+    Expected Result: Build exits with code 0, no compilation errors
+    Evidence: .sisyphus/evidence/task-07-ios-build.txt
   ```
 
   **Commit**: YES
@@ -544,15 +557,16 @@ Wave FINAL (Verification - 4 parallel):
 
   **What to do**:
   - Store `VideoQualityConfig` in `CameraInstance` when `createCamera()` is called
-  - In `initializeCamera()`:
-    - Parse quality config from stored data
-    - Set `AVCaptureSession.sessionPreset` based on resolution (with fallback)
-    - Configure compression settings via `AVVideoCompressionPropertiesKey`:
-      - `AVVideoAverageBitRateKey` for bitrate
-      - `AVVideoExpectedSourceFrameRateKey` for frame rate
-    - Set codec via `AVVideoCodecType` (`.h264` or `.hevc`)
-  - Implement auto-fallback when session preset not available
-  - Handle device format selection for exact resolution
+  - Create quality mapping from `VideoQuality` enum to `AVCaptureSession.Preset`:
+    - `sd` → .vga640x480
+    - `hd` → .hd1280x720
+    - `fullHd` → .hd1920x1080
+    - `ultraHd` → .hd4K3840x2160
+  - Set `AVCaptureSession.sessionPreset` based on quality
+  - Configure compression settings via `AVVideoCompressionPropertiesKey`:
+    - `AVVideoAverageBitRateKey` for bitrate
+    - `AVVideoExpectedSourceFrameRateKey` for frame rate
+  - Set codec via `AVVideoCodecType` (`.h264` or `.hevc`)
 
   **Must NOT do**:
   - Add audio configuration
@@ -561,40 +575,40 @@ Wave FINAL (Verification - 4 parallel):
 
   **Recommended Agent Profile**:
   - **Category**: `deep`
-    - Reason: Complex AVFoundation API with compression settings
   - **Skills**: [`flutter-expert`]
-    - `flutter-expert`: For Flutter plugin patterns
 
   **Parallelization**:
-  - **Can Run In Parallel**: YES (with Task 5 after respective event fixes)
-  - **Parallel Group**: Wave 3 (after Task 7)
+  - **Can Run In Parallel**: YES (with Task 5)
+  - **Parallel Group**: Wave 3
   - **Blocks**: Task 9
   - **Blocked By**: Task 7
 
-  **References**:
-  - `ios/Classes/WaffleCameraPlugin.swift:13-20` - CameraInstance (add qualityConfig)
-  - `ios/Classes/WaffleCameraPlugin.swift:83-102` - createCamera (store config)
-  - `ios/Classes/WaffleCameraPlugin.swift:104-177` - initializeCamera (apply quality)
-  - AVFoundation docs: `AVCaptureSession.sessionPreset`, `AVVideoCompressionPropertiesKey`
-
   **Acceptance Criteria**:
   - [ ] Quality config stored per camera instance
-  - [ ] Session preset set based on resolution
+  - [ ] Session preset set based on quality
   - [ ] Compression properties set for bitrate/frame rate
   - [ ] Codec selection works
   - [ ] iOS build succeeds
 
   **QA Scenarios**:
   ```
-  Scenario: iOS recording uses specified quality
-    Tool: Bash (iOS simulator)
+  Scenario: iOS recording uses specified quality preset
+    Tool: Bash (requires iOS simulator)
     Preconditions: iOS simulator running
     Steps:
-      1. Record video with VideoQualityConfig(width: 1920, height: 1080, bitrate: 8000000, frameRate: 30)
-      2. Stop recording and get file path
-      3. Verify file exists and has content
-    Expected Result: Video file created
+      1. Run example app with VideoQualityConfig(quality: VideoQuality.fullHd, bitrate: 8000000, frameRate: 30)
+      2. Start and stop recording
+      3. Verify file exists at returned path
+    Expected Result: Video file created, path returned successfully
     Evidence: .sisyphus/evidence/task-08-ios-quality.txt
+
+  Scenario: iOS quality fallback works
+    Tool: Bash (requires iOS simulator)
+    Steps:
+      1. Request ultraHd quality on device that may not support it
+      2. Verify recording still succeeds (fallback applied)
+    Expected Result: Recording succeeds with fallback quality
+    Evidence: .sisyphus/evidence/task-08-ios-fallback.txt
   ```
 
   **Commit**: YES
@@ -604,43 +618,31 @@ Wave FINAL (Verification - 4 parallel):
 - [ ] 9. iOS - Verify example runs
 
   **What to do**:
-  - Verify example app builds for iOS: `flutter build ios --no-codesign`
+  - Verify example builds: `flutter build ios --no-codesign`
   - Verify example runs on iOS simulator
-  - Test quality configuration changes in example app
-
-  **Must NOT do**:
-  - Add new UI (done in Task 6)
-  - Add new features
+  - Test quality configuration changes
 
   **Recommended Agent Profile**:
   - **Category**: `unspecified-high`
-    - Reason: Build verification and testing
   - **Skills**: [`flutter-expert`]
-    - `flutter-expert`: Flutter/iOS patterns
 
   **Parallelization**:
   - **Can Run In Parallel**: YES (with Task 6)
-  - **Parallel Group**: Wave 3 (after Task 8)
+  - **Parallel Group**: Wave 3
   - **Blocks**: Task 10
   - **Blocked By**: Task 8
-
-  **References**:
-  - `example/lib/main.dart` - Updated in Task 6
-  - `ios/Classes/WaffleCameraPlugin.swift` - Implementation to verify
 
   **Acceptance Criteria**:
   - [ ] `flutter build ios --no-codesign` succeeds
   - [ ] App runs on iOS simulator
-  - [ ] Quality selection works
 
   **QA Scenarios**:
   ```
-  Scenario: Example app builds for iOS
+  Scenario: iOS example app builds
     Tool: Bash
     Steps:
       1. cd example && flutter build ios --no-codesign
-      2. Verify build succeeds with exit code 0
-    Expected Result: iOS build created successfully
+    Expected Result: Build exits with code 0
     Evidence: .sisyphus/evidence/task-09-ios-build.txt
   ```
 
@@ -649,21 +651,15 @@ Wave FINAL (Verification - 4 parallel):
 - [ ] 10. Update example app with quality selector UI
 
   **What to do**:
-  - Add quality preset dropdown in example app (already started in Task 6)
-  - Presets: 720p@5Mbps/30fps, 1080p@8Mbps/30fps, 1080p@12Mbps/60fps, 4K@20Mbps/30fps
-  - Add custom quality input option (width, height, bitrate, frame rate)
+  - Add quality preset dropdown: SD, HD, Full HD, Ultra HD
+  - Add bitrate input (optional advanced)
+  - Add frame rate input (30/60)
   - Add codec selector (H.264, HEVC)
   - Display current recording quality info
 
-  **Must NOT do**:
-  - Over-engineer the UI (keep it simple)
-  - Add features beyond quality selection
-
   **Recommended Agent Profile**:
   - **Category**: `visual-engineering`
-    - Reason: UI/UX for quality selector
   - **Skills**: [`flutter-expert`]
-    - `flutter-expert`: Flutter widget development
 
   **Parallelization**:
   - **Can Run In Parallel**: NO
@@ -671,28 +667,33 @@ Wave FINAL (Verification - 4 parallel):
   - **Blocks**: Task 11
   - **Blocked By**: Task 6, Task 9
 
-  **References**:
-  - `example/lib/main.dart` - Current example
-  - `lib/src/video_quality_config.dart` - API to use
-  - `lib/src/video_codec.dart` - Codec enum
-
   **Acceptance Criteria**:
   - [ ] Quality preset dropdown works
-  - [ ] Custom quality inputs work
+  - [ ] Frame rate selector works
   - [ ] Codec selector works
   - [ ] UI displays current settings
 
   **QA Scenarios**:
   ```
-  Scenario: Quality selector UI functions correctly
-    Tool: Bash (emulator)
+  Scenario: Quality selector UI functional
+    Tool: Bash (requires emulator)
+    Preconditions: Android emulator OR iOS simulator running
     Steps:
-      1. Launch example app on emulator
-      2. Select 1080p preset
-      3. Start recording
-      4. Verify quality settings are applied
-    Expected Result: Recording starts with selected quality
+      1. Launch example app
+      2. Select "Full HD (1080p)" preset
+      3. Verify dropdown shows selected preset
+    Expected Result: UI reflects selection, VideoQualityConfig updated
     Evidence: .sisyphus/evidence/task-10-quality-ui.txt
+
+  Scenario: Quality changes applied to recording
+    Tool: Bash (requires emulator)
+    Steps:
+      1. Select HD (720p) preset
+      2. Start recording
+      3. Stop recording
+      4. Verify recording succeeds
+    Expected Result: Recording completes with selected quality
+    Evidence: .sisyphus/evidence/task-10-quality-recording.txt
   ```
 
   **Commit**: YES
@@ -706,19 +707,11 @@ Wave FINAL (Verification - 4 parallel):
   - Test: Recording with different quality configurations
   - Test: Recording state event sequence
   - Test: Quality fallback when unsupported
-  - Test: Codec selection
   - Run tests on both Android and iOS
-
-  **Must NOT do**:
-  - Add unit tests (already done in earlier tasks)
-  - Skip any platform
 
   **Recommended Agent Profile**:
   - **Category**: `deep`
-    - Reason: Integration testing requiring emulator/simulator
   - **Skills**: [`flutter-expert`, `android-mcp`]
-    - `flutter-expert`: Flutter testing
-    - `android-mcp`: Android emulator testing
 
   **Parallelization**:
   - **Can Run In Parallel**: NO
@@ -726,33 +719,27 @@ Wave FINAL (Verification - 4 parallel):
   - **Blocks**: Task 12
   - **Blocked By**: Task 10
 
-  **References**:
-  - `example/integration_test/plugin_integration_test.dart` - Existing integration tests
-  - `example/integration_test/camera_android_test.dart` - Android tests
-  - `example/integration_test/camera_ios_test.dart` - iOS tests
-
   **Acceptance Criteria**:
-  - [ ] Integration tests updated
+  - [ ] Integration tests created/updated
   - [ ] Tests pass on Android emulator
   - [ ] Tests pass on iOS simulator
-  - [ ] `flutter test integration_test/` passes
 
   **QA Scenarios**:
   ```
-  Scenario: Integration tests pass on Android
-    Tool: Bash
+  Scenario: Android integration tests pass
+    Tool: Bash (requires Android emulator)
     Preconditions: Android emulator running
     Steps:
-      1. cd example && flutter test integration_test/
-    Expected Result: All tests pass
+      1. cd example && flutter test integration_test/camera_android_test.dart
+    Expected Result: All tests exit with code 0
     Evidence: .sisyphus/evidence/task-11-android-integration.txt
 
-  Scenario: Integration tests pass on iOS
-    Tool: Bash
+  Scenario: iOS integration tests pass
+    Tool: Bash (requires iOS simulator)
     Preconditions: iOS simulator running
     Steps:
-      1. cd example && flutter test integration_test/
-    Expected Result: All tests pass
+      1. cd example && flutter test integration_test/camera_ios_test.dart
+    Expected Result: All tests exit with code 0
     Evidence: .sisyphus/evidence/task-11-ios-integration.txt
   ```
 
@@ -763,18 +750,16 @@ Wave FINAL (Verification - 4 parallel):
 - [ ] 12. Cleanup - Remove deprecated code and update docs
 
   **What to do**:
-  - Remove `lib/src/resolution_preset.dart` (replaced by VideoQualityConfig)
+  - Remove `lib/src/resolution_preset.dart` (replaced by VideoQuality)
   - Update README.md with new API usage examples
-  - Add API documentation to `VideoQualityConfig` and `VideoCodec`
+  - Add API documentation to `VideoQuality`, `VideoCodec`, `VideoQualityConfig`
   - Update CHANGELOG.md with breaking changes note
 
   **Must NOT do**:
   - Keep ResolutionPreset for backward compatibility (breaking change approved)
-  - Add new features
 
   **Recommended Agent Profile**:
   - **Category**: `quick`
-    - Reason: Cleanup and documentation
   - **Skills**: []
 
   **Parallelization**:
@@ -783,24 +768,33 @@ Wave FINAL (Verification - 4 parallel):
   - **Blocks**: Final Wave
   - **Blocked By**: Task 11
 
-  **References**:
-  - `lib/src/resolution_preset.dart` - File to remove
-  - `lib/src/video_quality_config.dart` - New class to document
-  - `README.md` - To update
-
   **Acceptance Criteria**:
   - [ ] `resolution_preset.dart` deleted
   - [ ] README updated with new API examples
-  - [ ] All tests still pass after cleanup
+  - [ ] All tests still pass
 
   **QA Scenarios**:
   ```
-  Scenario: Cleanup doesn't break tests
+  Scenario: ResolutionPreset removed
     Tool: Bash
     Steps:
-      1. Run `flutter test`
-    Expected Result: All tests pass
-    Evidence: .sisyphus/evidence/task-12-cleanup.txt
+      1. test -f lib/src/resolution_preset.dart && echo "FILE EXISTS" || echo "FILE DELETED"
+    Expected Result: Output is "FILE DELETED"
+    Evidence: .sisyphus/evidence/task-12-file-deleted.txt
+
+  Scenario: All tests still pass after cleanup
+    Tool: Bash
+    Steps:
+      1. flutter test
+    Expected Result: All tests pass, exit code 0
+    Evidence: .sisyphus/evidence/task-12-tests-pass.txt
+
+  Scenario: README contains VideoQualityConfig example
+    Tool: Bash
+    Steps:
+      1. grep -n "VideoQualityConfig" README.md
+    Expected Result: Returns at least one match
+    Evidence: .sisyphus/evidence/task-12-readme-updated.txt
   ```
 
   **Commit**: YES

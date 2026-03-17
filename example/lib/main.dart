@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:io';
+import 'dart:developer' as developer;
 
 import 'package:flutter/services.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
@@ -46,8 +47,10 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
   bool _isInitializing = false;
   bool _isRecording = false;
   bool _isPaused = false;
+  bool _isSwitching = false;
   String? _errorMessage;
   String? _recordedFilePath;
+  String? _selectedPath;
 
   RecordingState _recordingState = RecordingState.idle;
   StreamSubscription<RecordingState>? _recordingStateSubscription;
@@ -305,6 +308,45 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
     }
   }
 
+  Future<void> _switchCameraDuringRecording() async {
+    if (_cameras.length < 2 || _cameraId == null || !_isRecording) return;
+
+    setState(() {
+      _isSwitching = true;
+    });
+
+    try {
+      developer.log('Camera switch started for camera ID: $_cameraId');
+      print('🎥 Camera switch started for camera ID: $_cameraId');
+
+      // Switch to next camera
+      setState(() {
+        _selectedCameraIndex = (_selectedCameraIndex! + 1) % _cameras.length;
+      });
+
+      // Call platform method to switch camera during recording
+      await _platform.switchCamera(_cameraId!);
+
+      // Determine which path was selected
+      bool canSwitch = await _platform.canSwitchCamera(_cameraId!);
+      _selectedPath = canSwitch ? 'iosOptimizedMultiCam' : 'fallback';
+
+      developer.log('Camera switch completed. Selected path: $_selectedPath');
+      print('✅ Camera switch completed. Selected path: $_selectedPath');
+    } on PlatformException catch (e) {
+      developer.log('Camera switch failed: ${e.message}', error: e);
+      print('❌ Camera switch failed: ${e.message}');
+
+      setState(() {
+        _errorMessage = 'Failed to switch camera: ${e.message}';
+      });
+    } finally {
+      setState(() {
+        _isSwitching = false;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -452,59 +494,111 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
   Widget _buildControlButtons() {
     return Padding(
       padding: const EdgeInsets.all(16.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      child: Column(
         children: [
-          // Initialize/Dispose button
-          if (_textureId == null)
-            ElevatedButton.icon(
-              onPressed: _isInitializing ? null : _initializeCamera,
-              icon: const Icon(Icons.camera),
-              label: const Text('Start Camera'),
-            )
-          else
-            ElevatedButton.icon(
-              onPressed: _isRecording ? null : _disposeCamera,
-              icon: const Icon(Icons.close),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.red,
-                foregroundColor: Colors.white,
-              ),
-              label: const Text('Stop Camera'),
+          // Switch camera button during recording (shown only when recording)
+          if (_isRecording && _cameras.length > 1)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12.0),
+              child: _isSwitching
+                  ? Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.blue, width: 2),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: const Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              valueColor: AlwaysStoppedAnimation<Color>(
+                                Colors.blue,
+                              ),
+                            ),
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            'Switching camera...',
+                            style: TextStyle(
+                              color: Colors.blue,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  : ElevatedButton.icon(
+                      onPressed: _switchCameraDuringRecording,
+                      icon: const Icon(Icons.switch_camera),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blue,
+                        foregroundColor: Colors.white,
+                      ),
+                      label: const Text('Switch Camera'),
+                    ),
             ),
 
-          // Recording controls
-          if (_textureId != null) ...[
-            if (!_isRecording)
-              ElevatedButton.icon(
-                onPressed: _startRecording,
-                icon: const Icon(Icons.fiber_manual_record),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
+          // Main control buttons
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              // Initialize/Dispose button
+              if (_textureId == null)
+                ElevatedButton.icon(
+                  onPressed: _isInitializing ? null : _initializeCamera,
+                  icon: const Icon(Icons.camera),
+                  label: const Text('Start Camera'),
+                )
+              else
+                ElevatedButton.icon(
+                  onPressed: _isRecording ? null : _disposeCamera,
+                  icon: const Icon(Icons.close),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red,
+                    foregroundColor: Colors.white,
+                  ),
+                  label: const Text('Stop Camera'),
                 ),
-                label: const Text('Record'),
-              )
-            else ...[
-              // Pause/Resume button
-              ElevatedButton.icon(
-                onPressed: _isPaused ? _resumeRecording : _pauseRecording,
-                icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause),
-                label: Text(_isPaused ? 'Resume' : 'Pause'),
-              ),
 
-              // Stop button
-              ElevatedButton.icon(
-                onPressed: _stopRecording,
-                icon: const Icon(Icons.stop),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                ),
-                label: const Text('Stop'),
-              ),
+              // Recording controls
+              if (_textureId != null) ...[
+                if (!_isRecording)
+                  ElevatedButton.icon(
+                    onPressed: _startRecording,
+                    icon: const Icon(Icons.fiber_manual_record),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                    ),
+                    label: const Text('Record'),
+                  )
+                else ...[
+                  // Pause/Resume button
+                  ElevatedButton.icon(
+                    onPressed: _isPaused ? _resumeRecording : _pauseRecording,
+                    icon: Icon(_isPaused ? Icons.play_arrow : Icons.pause),
+                    label: Text(_isPaused ? 'Resume' : 'Pause'),
+                  ),
+
+                  // Stop button
+                  ElevatedButton.icon(
+                    onPressed: _stopRecording,
+                    icon: const Icon(Icons.stop),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red,
+                      foregroundColor: Colors.white,
+                    ),
+                    label: const Text('Stop'),
+                  ),
+                ],
+              ],
             ],
-          ],
+          ),
         ],
       ),
     );
