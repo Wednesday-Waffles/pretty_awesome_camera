@@ -62,7 +62,9 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         var segmentFiles: MutableList<File> = mutableListOf(),
         var currentSegmentIndex: Int = 0,
         var isSwitching: Boolean = false,
-        var switchingHandler: (() -> Unit)? = null
+        var switchingHandler: (() -> Unit)? = null,
+        var isPaused: Boolean = false,
+        var pauseResumeHandler: (() -> Unit)? = null
     )
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -312,81 +314,176 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     private fun pauseRecording(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
-        val cameraInstance = cameras[cameraId]
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
 
-        if (cameraInstance?.recording != null) {
-            try {
-                cameraInstance.recording?.pause()
-                result.success(null)
-            } catch (e: Exception) {
-                result.error("PAUSE_ERROR", e.message, null)
-            }
-        } else {
+        if (cameraInstance.recording == null) {
             result.error("NOT_RECORDING", "No active recording", null)
+            return
+        }
+
+        if (cameraInstance.isPaused) {
+            result.success(null)
+            return
+        }
+
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        cameraInstance.isPaused = true
+        val recording = cameraInstance.recording!!
+        cameraInstance.recording = null
+
+        cameraInstance.recordingURL?.let { url ->
+            if (url.isNotEmpty()) {
+                cameraInstance.segmentFiles.add(File(url))
+            }
+        }
+        cameraInstance.recordingURL = null
+
+        var hasCompleted = false
+        cameraInstance.pauseResumeHandler = {
+            if (!hasCompleted) {
+                hasCompleted = true
+                cameraInstance.pauseResumeHandler = null
+                result.success(null)
+            }
+        }
+
+        recording.stop()
+
+        GlobalScope.launch(Dispatchers.Main) {
+            delay(3000)
+            if (!hasCompleted) {
+                hasCompleted = true
+                cameraInstance.pauseResumeHandler = null
+                result.success(null)
+            }
         }
     }
 
     private fun resumeRecording(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
-        val cameraInstance = cameras[cameraId]
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
 
-        if (cameraInstance?.recording != null) {
-            try {
-                cameraInstance.recording?.resume()
-                result.success(null)
-            } catch (e: Exception) {
-                result.error("RESUME_ERROR", e.message, null)
-            }
-        } else {
-            result.error("NOT_RECORDING", "No active recording", null)
+        if (!cameraInstance.isPaused) {
+            result.error("NOT_PAUSED", "Recording is not paused", null)
+            return
+        }
+
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        val videoCapture = cameraInstance.videoCapture ?: run {
+            result.error("NOT_INITIALIZED", "Camera not initialized", null)
+            return
+        }
+
+        val lensDirection = cameraInstance.cameraDescription?.get("lensDirection") as? String ?: "back"
+
+        try {
+            cameraInstance.isPaused = false
+
+            val segmentFile = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_${cameraInstance.currentSegmentIndex}.mp4")
+            cameraInstance.currentSegmentIndex++
+
+            val outputOptions = FileOutputOptions.Builder(segmentFile).build()
+            val recording = videoCapture.output
+                .prepareRecording(activity, outputOptions)
+                .withAudioEnabled()
+                .start(ContextCompat.getMainExecutor(activity)) { event ->
+                    when (event) {
+                        is VideoRecordEvent.Finalize -> {
+                            cameraInstance.recordingURL?.let { url ->
+                                if (url.isNotEmpty() && !cameraInstance.segmentFiles.any { it.absolutePath == url }) {
+                                    cameraInstance.segmentFiles.add(File(url))
+                                }
+                            }
+                            cameraInstance.pauseResumeHandler?.let { handler ->
+                                cameraInstance.pauseResumeHandler = null
+                                handler()
+                            }
+                        }
+                        else -> {}
+                    }
+                }
+
+            cameraInstance.recording = recording
+            cameraInstance.recordingURL = segmentFile.absolutePath
+
+            result.success(null)
+        } catch (e: Exception) {
+            result.error("RESUME_ERROR", e.message, null)
         }
     }
 
     private fun stopRecording(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
-        val cameraInstance = cameras[cameraId]
-        val recording = cameraInstance?.recording
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+
+        val recording = cameraInstance.recording
 
         if (recording != null) {
             try {
                 recording.stop()
-                cameraInstance?.recording = null
-                
-                if (cameraInstance?.segmentFiles?.isEmpty() == true) {
-                    result.error("NO_RECORDING", "No recording segments found", null)
-                    return
-                }
-                
-                if (cameraInstance?.segmentFiles?.size == 1) {
-                    val outputFile = cameraInstance.segmentFiles[0]
-                    cameraInstance.segmentFiles.clear()
-                    cameraInstance.currentSegmentIndex = 0
-                    result.success(outputFile.absolutePath)
-                    return
-                }
-                
-                GlobalScope.launch(Dispatchers.IO) {
-                    try {
-                        val mergedFile = mergeSegments(cameraInstance.segmentFiles)
-                        cleanupSegmentFiles(cameraInstance.segmentFiles)
-                        cameraInstance.segmentFiles.clear()
-                        cameraInstance.currentSegmentIndex = 0
-                        result.success(mergedFile.absolutePath)
-                    } catch (e: Exception) {
-                        cleanupSegmentFiles(cameraInstance.segmentFiles)
-                        cameraInstance.segmentFiles.clear()
-                        cameraInstance.currentSegmentIndex = 0
-                        result.error("MERGE_ERROR", e.message, null)
+                cameraInstance.recording = null
+
+                cameraInstance.recordingURL?.let { url ->
+                    if (url.isNotEmpty()) {
+                        cameraInstance.segmentFiles.add(File(url))
                     }
                 }
+                cameraInstance.recordingURL = null
             } catch (e: Exception) {
-                cleanupSegmentFiles(cameraInstance?.segmentFiles ?: mutableListOf())
-                cameraInstance?.segmentFiles?.clear()
-                cameraInstance?.currentSegmentIndex = 0
+                cleanupSegmentFiles(cameraInstance.segmentFiles)
+                cameraInstance.segmentFiles.clear()
+                cameraInstance.currentSegmentIndex = 0
+                cameraInstance.isPaused = false
                 result.error("STOP_ERROR", e.message, null)
+                return
             }
-        } else {
-            result.error("NOT_RECORDING", "No active recording", null)
+        }
+
+        if (cameraInstance.segmentFiles.isEmpty()) {
+            result.error("NO_RECORDING", "No recording segments found", null)
+            return
+        }
+
+        cameraInstance.isPaused = false
+
+        if (cameraInstance.segmentFiles.size == 1) {
+            val outputFile = cameraInstance.segmentFiles[0]
+            cameraInstance.segmentFiles.clear()
+            cameraInstance.currentSegmentIndex = 0
+            result.success(outputFile.absolutePath)
+            return
+        }
+
+        GlobalScope.launch(Dispatchers.IO) {
+            try {
+                val mergedFile = mergeSegments(cameraInstance.segmentFiles)
+                cleanupSegmentFiles(cameraInstance.segmentFiles)
+                cameraInstance.segmentFiles.clear()
+                cameraInstance.currentSegmentIndex = 0
+                result.success(mergedFile.absolutePath)
+            } catch (e: Exception) {
+                cleanupSegmentFiles(cameraInstance.segmentFiles)
+                cameraInstance.segmentFiles.clear()
+                cameraInstance.currentSegmentIndex = 0
+                result.error("MERGE_ERROR", e.message, null)
+            }
         }
     }
 
@@ -431,6 +528,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
         val canSwitch = cameraInstance.recording != null &&
                         !cameraInstance.isSwitching &&
+                        !cameraInstance.isPaused &&
                         hasFrontCamera &&
                         hasBackCamera
 
@@ -458,7 +556,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
 
         for (instance in cameras.values) {
-            if (instance.recording != null && !instance.isSwitching) {
+            if (instance.recording != null && !instance.isSwitching && !instance.isPaused) {
                 result.success(true)
                 return
             }
@@ -480,6 +578,11 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
         if (cameraInstance.isSwitching) {
             result.error("SWITCH_IN_PROGRESS", "Camera switch already in progress", null)
+            return
+        }
+
+        if (cameraInstance.isPaused) {
+            result.error("PAUSED", "Cannot switch camera while paused", null)
             return
         }
 
