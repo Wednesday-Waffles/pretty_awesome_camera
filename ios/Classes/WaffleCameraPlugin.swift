@@ -8,7 +8,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private var textureRegistry: FlutterTextureRegistry?
     private var eventChannels: [Int: FlutterEventChannel] = [:]
     private var eventSinks: [Int: FlutterEventSink] = [:]
-    private var textureChangedHandlers: [Int: TextureChangedStreamHandler] = [:]
     private var registrar: FlutterPluginRegistrar?
     
     /// Called when a segment finishes writing to disk (via AVCaptureFileOutputRecordingDelegate).
@@ -182,14 +181,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 let streamHandler = RecordingStateStreamHandler()
                 stateChannel.setStreamHandler(streamHandler)
                 eventChannels[cameraId] = stateChannel
-                
-                let textureChannel = FlutterEventChannel(
-                    name: "waffle_camera_plugin/texture_changed_\(cameraId)",
-                    binaryMessenger: registrar.messenger()
-                )
-                let textureStreamHandler = TextureChangedStreamHandler()
-                textureChannel.setStreamHandler(textureStreamHandler)
-                textureChangedHandlers[cameraId] = textureStreamHandler
             }
             
             DispatchQueue.global(qos: .userInitiated).async {
@@ -404,8 +395,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 inst?.lensPosition = newPosition
                 self.cameras[cameraId] = inst
                 
-                self.textureChangedHandlers[cameraId]?.emitTextureChanged(newTextureId)
-                
                 let tempDir = FileManager.default.temporaryDirectory
                 let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970))_segment_\(inst?.segmentURLs.count ?? 0).mov")
                 
@@ -415,7 +404,7 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 finalInst?.recordingURL = recordingURL
                 self.cameras[cameraId] = finalInst
                 
-                result(nil)
+                result(newTextureId)
             } catch {
                 result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
             }
@@ -631,20 +620,3 @@ class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
     }
 }
 
-class TextureChangedStreamHandler: NSObject, FlutterStreamHandler {
-    private var eventSink: FlutterEventSink?
-    
-    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
-        self.eventSink = events
-        return nil
-    }
-    
-    func onCancel(withArguments arguments: Any?) -> FlutterError? {
-        self.eventSink = nil
-        return nil
-    }
-    
-    func emitTextureChanged(_ textureId: Int64) {
-        eventSink?(textureId)
-    }
-}

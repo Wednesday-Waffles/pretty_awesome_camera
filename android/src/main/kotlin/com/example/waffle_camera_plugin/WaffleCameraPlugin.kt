@@ -21,7 +21,6 @@ import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
-import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
@@ -38,9 +37,6 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private var activity: Activity? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
     private val cameras = mutableMapOf<Int, CameraInstance>()
-    private val eventChannels = mutableMapOf<Int, EventChannel>()
-    private val eventSinks = mutableMapOf<Int, EventChannel.EventSink>()
-    private val textureChangedSinks = mutableMapOf<Int, EventChannel.EventSink>()
     private var nextCameraId = 0
     private val executor = Executors.newSingleThreadExecutor()
 
@@ -192,18 +188,6 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 
                 val textureId = cameraInstance.textureEntry?.id()
                 if (textureId != null) {
-                    val textureChannel = EventChannel(
-                        "waffle_camera_plugin/texture_changed_$cameraId",
-                        binding.binaryMessenger
-                    )
-                    textureChannel.setStreamHandler(object : EventChannel.StreamHandler {
-                        override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
-                            textureChangedSinks[cameraId] = events
-                        }
-                        override fun onCancel(arguments: Any?) {
-                            textureChangedSinks.remove(cameraId)
-                        }
-                    })
                     result.success(textureId)
                 } else {
                     result.error("TEXTURE_ERROR", "Failed to create texture", null)
@@ -481,11 +465,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 cameraInstance.isSwitching = false
 
                 val currentTextureId = cameraInstance.textureEntry?.id()
-                if (currentTextureId != null) {
-                    textureChangedSinks[cameraId]?.success(currentTextureId)
-                }
-
-                result.success(null)
+                result.success(currentTextureId)
             } catch (e: Exception) {
                 cameraInstance.isSwitching = false
                 result.error("SWITCH_ERROR", e.message, null)
