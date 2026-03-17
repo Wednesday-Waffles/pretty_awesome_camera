@@ -175,7 +175,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val textureEntry = binding.textureRegistry.createSurfaceTexture()
                 cameraInstance.textureEntry = textureEntry
 
-                val rotation = activity.windowManager.defaultDisplay.rotation
+                val rotation = activity.display?.rotation ?: Surface.ROTATION_0
 
                 val preview = Preview.Builder()
                     .setTargetRotation(rotation)
@@ -293,7 +293,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
             val outputOptions = FileOutputOptions.Builder(file).build()
 
-            val rotation = activity.windowManager.defaultDisplay.rotation
+            val rotation = activity.display?.rotation ?: Surface.ROTATION_0
             videoCapture.targetRotation = rotation
 
             val recording = videoCapture.output
@@ -404,7 +404,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
             val outputOptions = FileOutputOptions.Builder(segmentFile).build()
 
-            val resumeRotation = activity.windowManager.defaultDisplay.rotation
+            val resumeRotation = activity.display?.rotation ?: Surface.ROTATION_0
             videoCapture.targetRotation = resumeRotation
 
             val recording = videoCapture.output
@@ -665,7 +665,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     return@addListener
                 }
 
-                val switchRotation = activity.windowManager.defaultDisplay.rotation
+                val switchRotation = activity.display?.rotation ?: Surface.ROTATION_0
 
                 val preview = Preview.Builder()
                     .setTargetRotation(switchRotation)
