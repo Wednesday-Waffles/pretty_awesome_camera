@@ -50,11 +50,9 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
   bool _isSwitching = false;
   String? _errorMessage;
   String? _recordedFilePath;
-  String? _selectedPath;
 
   RecordingState _recordingState = RecordingState.idle;
   StreamSubscription<RecordingState>? _recordingStateSubscription;
-  StreamSubscription<dynamic>? _textureChangedSubscription;
 
   @override
   void initState() {
@@ -65,7 +63,6 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
   @override
   void dispose() {
     _recordingStateSubscription?.cancel();
-    _textureChangedSubscription?.cancel();
     _disposeCamera();
     super.dispose();
   }
@@ -119,22 +116,8 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
             });
           });
 
-      // Subscribe to texture changes (camera switch creates new texture)
-      final textureChannel = EventChannel(
-        'waffle_camera_plugin/texture_changed_$cameraId',
-      );
-      _textureChangedSubscription = textureChannel
-          .receiveBroadcastStream()
-          .listen((dynamic newTextureId) {
-            if (newTextureId is int) {
-              setState(() {
-                _textureId = newTextureId;
-              });
-            }
-          });
-
       setState(() {
-        _textureId = textureId as int?;
+        _textureId = textureId;
         _isInitializing = false;
         _recordedFilePath = null;
       });
@@ -333,25 +316,18 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
 
     try {
       developer.log('Camera switch started for camera ID: $_cameraId');
-      print('🎥 Camera switch started for camera ID: $_cameraId');
 
-      // Switch to next camera
+      // Switch camera — returns the new texture ID (may be same ID on Android)
+      final newTextureId = await _platform.switchCamera(_cameraId!);
+
       setState(() {
+        _textureId = newTextureId;
         _selectedCameraIndex = (_selectedCameraIndex! + 1) % _cameras.length;
       });
 
-      // Call platform method to switch camera during recording
-      await _platform.switchCamera(_cameraId!);
-
-      // Determine which path was selected
-      bool canSwitch = await _platform.canSwitchCamera(_cameraId!);
-      _selectedPath = canSwitch ? 'iosOptimizedMultiCam' : 'fallback';
-
-      developer.log('Camera switch completed. Selected path: $_selectedPath');
-      print('✅ Camera switch completed. Selected path: $_selectedPath');
+      developer.log('Camera switch completed, new texture ID: $newTextureId');
     } on PlatformException catch (e) {
       developer.log('Camera switch failed: ${e.message}', error: e);
-      print('❌ Camera switch failed: ${e.message}');
 
       setState(() {
         _errorMessage = 'Failed to switch camera: ${e.message}';
