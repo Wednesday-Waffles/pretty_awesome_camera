@@ -7,9 +7,13 @@ import android.hardware.camera2.CameraManager
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.util.Rational
+import android.view.Surface
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
+import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Recorder
@@ -31,7 +35,6 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.concurrent.Executors
-
 import java.nio.ByteBuffer
 
 class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
@@ -164,66 +167,79 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 
                 val textureEntry = binding.textureRegistry.createSurfaceTexture()
                 cameraInstance.textureEntry = textureEntry
-                
+
                 val preview = Preview.Builder()
-                    .setTargetRotation(android.view.Surface.ROTATION_0)
                     .build()
-                    .also {
-                        it.setSurfaceProvider { request ->
-                            val surfaceTexture = textureEntry.surfaceTexture()
-                            surfaceTexture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
-                            val surface = android.view.Surface(surfaceTexture)
-                            request.provideSurface(surface, executor) {}
-                        }
-                    }
                 cameraInstance.preview = preview
-                
+
                 val recorder = Recorder.Builder()
                     .setExecutor(executor)
                     .build()
                 val videoCapture = VideoCapture.withOutput(recorder)
                 cameraInstance.videoCapture = videoCapture
-                
+
+                val useCaseGroup = UseCaseGroup.Builder()
+                    .addUseCase(preview)
+                    .addUseCase(videoCapture)
+                    .setViewPort(ViewPort.Builder(Rational(9, 16), Surface.ROTATION_0).build())
+                    .build()
+
+                cameraProvider.unbindAll()
                 val camera = cameraProvider.bindToLifecycle(
                     activity as LifecycleOwner,
                     cameraSelector,
-                    preview,
-                    videoCapture
+                    useCaseGroup
                 )
+
+                preview.setSurfaceProvider(createSurfaceProvider(textureEntry))
                 cameraInstance.camera = camera
                 
-                val textureId = cameraInstance.textureEntry?.id()
-                if (textureId != null) {
-                    result.success(textureId)
-                } else {
-                    result.error("TEXTURE_ERROR", "Failed to create texture", null)
-                }
+                val textureId = textureEntry.id()
+                result.success(textureId)
             } catch (e: Exception) {
                 result.error("INIT_ERROR", e.message, null)
             }
         }, ContextCompat.getMainExecutor(activity))
     }
 
-     private fun disposeCamera(call: MethodCall, result: Result) {
-         val cameraId = call.argument<Int>("cameraId")
-         val cameraInstance = cameras[cameraId] ?: run {
-             result.success(null)
-             return
-         }
-         
-         cameraInstance.camera?.let { camera ->
-             val activity = this.activity
-             if (activity != null) {
-                 val cameraProvider = ProcessCameraProvider.getInstance(activity).get()
-                 cameraProvider.unbind(cameraInstance.preview, cameraInstance.videoCapture)
-             }
-         }
-         
-         cameraInstance.textureEntry?.release()
-         cameras.remove(cameraId)
-         
-         result.success(null)
-     }
+    private fun createSurfaceProvider(textureEntry: TextureRegistry.SurfaceTextureEntry): Preview.SurfaceProvider {
+        return Preview.SurfaceProvider { request ->
+            val resolution = request.resolution
+            val surfaceTexture = textureEntry.surfaceTexture()
+            surfaceTexture.setDefaultBufferSize(resolution.width, resolution.height)
+            val surface = Surface(surfaceTexture)
+            request.provideSurface(surface, executor) {
+                surface.release()
+            }
+        }
+    }
+
+    private fun disposeCamera(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.success(null)
+            return
+        }
+
+        val activity = this.activity
+        if (activity != null && cameraInstance.camera != null) {
+            val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
+            cameraProviderFuture.addListener({
+                try {
+                    val cameraProvider = cameraProviderFuture.get()
+                    cameraProvider.unbindAll()
+                } catch (_: Exception) {}
+
+                cameraInstance.textureEntry?.release()
+                cameras.remove(cameraId)
+                result.success(null)
+            }, ContextCompat.getMainExecutor(activity))
+        } else {
+            cameraInstance.textureEntry?.release()
+            cameras.remove(cameraId)
+            result.success(null)
+        }
+    }
 
     private fun startRecording(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
@@ -248,7 +264,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             cameraInstance.recordingURL = file.absolutePath
             cameraInstance.segmentFiles.add(file)
             cameraInstance.currentSegmentIndex = 1
-
+            
             val outputOptions = FileOutputOptions.Builder(file).build()
 
             val recording = videoCapture.output
@@ -403,10 +419,10 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
 
         cameraInstance.isSwitching = true
-
+        
         val recording = cameraInstance.recording!!
         cameraInstance.recording = null
-
+        
         cameraInstance.recordingURL?.let { url ->
             cameraInstance.segmentFiles.add(File(url))
         }
@@ -445,18 +461,16 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 cameraProvider.unbindAll()
 
                 val textureEntry = cameraInstance.textureEntry
+                if (textureEntry == null) {
+                    cameraInstance.isSwitching = false
+                    result.error("TEXTURE_ERROR", "No texture entry available", null)
+                    return@addListener
+                }
+
                 val preview = Preview.Builder()
-                    .setTargetRotation(android.view.Surface.ROTATION_0)
                     .build()
                     .also {
-                        if (textureEntry != null) {
-                            it.setSurfaceProvider { request ->
-                                val surfaceTexture = textureEntry.surfaceTexture()
-                                surfaceTexture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
-                                val surface = android.view.Surface(surfaceTexture)
-                                request.provideSurface(surface, executor) {}
-                            }
-                        }
+                        it.setSurfaceProvider(createSurfaceProvider(textureEntry))
                     }
                 cameraInstance.preview = preview
 
@@ -466,11 +480,16 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val videoCapture = VideoCapture.withOutput(recorder)
                 cameraInstance.videoCapture = videoCapture
 
+                val useCaseGroup = UseCaseGroup.Builder()
+                    .addUseCase(preview)
+                    .addUseCase(videoCapture)
+                    .setViewPort(ViewPort.Builder(Rational(9, 16), Surface.ROTATION_0).build())
+                    .build()
+
                 val camera = cameraProvider.bindToLifecycle(
                     activity as LifecycleOwner,
                     cameraSelector,
-                    preview,
-                    videoCapture
+                    useCaseGroup
                 )
                 cameraInstance.camera = camera
 
@@ -519,7 +538,6 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         try {
             var videoTrackIndex = -1
             var audioTrackIndex = -1
-            var totalDuration = 0L
             var muxerStarted = false
             
             for (segmentFile in segmentFiles) {
@@ -560,7 +578,6 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
                 
                 extractor.release()
-                totalDuration += (segmentFile.length() / 1000)
             }
             
             muxer.stop()
@@ -568,14 +585,8 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             
             return outputFile
         } catch (e: Exception) {
-            try {
-                muxer.stop()
-            } catch (e2: Exception) {
-            }
-            try {
-                muxer.release()
-            } catch (e2: Exception) {
-            }
+            try { muxer.stop() } catch (_: Exception) {}
+            try { muxer.release() } catch (_: Exception) {}
             if (outputFile.exists()) {
                 outputFile.delete()
             }
@@ -613,12 +624,12 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 if (file.exists()) {
                     file.delete()
                 }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
             }
         }
     }
 
-     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
         flutterPluginBinding = null
     }
