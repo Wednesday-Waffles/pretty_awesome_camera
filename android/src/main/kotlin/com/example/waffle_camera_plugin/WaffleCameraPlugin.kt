@@ -170,7 +170,9 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     .build()
                     .also {
                         it.setSurfaceProvider { request ->
-                            val surface = android.view.Surface(textureEntry.surfaceTexture())
+                            val surfaceTexture = textureEntry.surfaceTexture()
+                            surfaceTexture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+                            val surface = android.view.Surface(surfaceTexture)
                             request.provideSurface(surface, executor) {}
                         }
                     }
@@ -243,15 +245,26 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             cameraInstance.currentSegmentIndex = 0
             
             val file = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_0.mp4")
+            cameraInstance.recordingURL = file.absolutePath
             cameraInstance.segmentFiles.add(file)
             cameraInstance.currentSegmentIndex = 1
-            
+
             val outputOptions = FileOutputOptions.Builder(file).build()
 
             val recording = videoCapture.output
                 .prepareRecording(activity, outputOptions)
                 .withAudioEnabled()
-                .start(ContextCompat.getMainExecutor(activity)) { event -> }
+                .start(ContextCompat.getMainExecutor(activity)) { event ->
+                    when (event) {
+                        is VideoRecordEvent.Finalize -> {
+                            cameraInstance.switchingHandler?.let { handler ->
+                                cameraInstance.switchingHandler = null
+                                handler()
+                            }
+                        }
+                        else -> {}
+                    }
+                }
 
             cameraInstance.recording = recording
             result.success(null)
@@ -390,11 +403,13 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
 
         cameraInstance.isSwitching = true
-        
+
         val recording = cameraInstance.recording!!
         cameraInstance.recording = null
-        
-        cameraInstance.segmentFiles.add(File(cameraInstance.recordingURL!!))
+
+        cameraInstance.recordingURL?.let { url ->
+            cameraInstance.segmentFiles.add(File(url))
+        }
         cameraInstance.recordingURL = null
         
         val newLensDirection = if ((cameraInstance.cameraDescription?.get("lensDirection") as? String) == "front") "back" else "front"
@@ -436,7 +451,9 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     .also {
                         if (textureEntry != null) {
                             it.setSurfaceProvider { request ->
-                                val surface = android.view.Surface(textureEntry.surfaceTexture())
+                                val surfaceTexture = textureEntry.surfaceTexture()
+                                surfaceTexture.setDefaultBufferSize(request.resolution.width, request.resolution.height)
+                                val surface = android.view.Surface(surfaceTexture)
                                 request.provideSurface(surface, executor) {}
                             }
                         }
@@ -465,7 +482,17 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val recording = videoCapture.output
                     .prepareRecording(activity, outputOptions)
                     .withAudioEnabled()
-                    .start(ContextCompat.getMainExecutor(activity)) { event -> }
+                    .start(ContextCompat.getMainExecutor(activity)) { event ->
+                        when (event) {
+                            is VideoRecordEvent.Finalize -> {
+                                cameraInstance.switchingHandler?.let { handler ->
+                                    cameraInstance.switchingHandler = null
+                                    handler()
+                                }
+                            }
+                            else -> {}
+                        }
+                    }
 
                 cameraInstance.recording = recording
                 cameraInstance.isSwitching = false

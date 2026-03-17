@@ -1,6 +1,7 @@
 import Flutter
 import UIKit
 import AVFoundation
+import os.lock
 
 public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private var cameras: [Int: CameraInstance] = [:]
@@ -9,8 +10,9 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private var eventChannels: [Int: FlutterEventChannel] = [:]
     private var registrar: FlutterPluginRegistrar?
     private let sessionQueue = DispatchQueue(label: "com.waffle.camera.session")
+    private var stateLock = os_unfair_lock()
     
-    struct CameraInstance {
+    class CameraInstance {
         let cameraId: Int
         var captureSession: AVCaptureSession?
         var previewTexture: CameraPreviewTexture?
@@ -22,10 +24,11 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         var audioWriterInput: AVAssetWriterInput?
         var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
         var audioDataOutput: AVCaptureAudioDataOutput?
-        var isRecording: Bool = false
-        var isPaused: Bool = false
-        var videoIsDisconnected: Bool = false
-        var audioIsDisconnected: Bool = false
+        private var recordingLock = os_unfair_lock()
+        private var _isRecording: Bool = false
+        private var _isPaused: Bool = false
+        private var _videoIsDisconnected: Bool = false
+        private var _audioIsDisconnected: Bool = false
         var videoTimeOffset: CMTime = .zero
         var audioTimeOffset: CMTime = .zero
         var lastVideoSampleTime: CMTime = .zero
@@ -33,6 +36,62 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         var isFirstVideoFrame: Bool = true
         var isFirstAudioFrame: Bool = true
         var sessionStartTime: CMTime = .zero
+        
+        init(cameraId: Int) {
+            self.cameraId = cameraId
+        }
+        
+        var isRecording: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _isRecording
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _isRecording = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+        
+        var isPaused: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _isPaused
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _isPaused = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+        
+        var videoIsDisconnected: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _videoIsDisconnected
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _videoIsDisconnected = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+        
+        var audioIsDisconnected: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _audioIsDisconnected
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _audioIsDisconnected = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
     }
     
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -117,21 +176,30 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         let lensDirection = cameraDescription["lensDirection"] as? String ?? "back"
         let position: AVCaptureDevice.Position = lensDirection == "front" ? .front : .back
         
-        cameras[cameraId] = CameraInstance(
-            cameraId: cameraId,
-            lensPosition: position
-        )
+        let instance = CameraInstance(cameraId: cameraId)
+        instance.lensPosition = position
+        
+        os_unfair_lock_lock(&stateLock)
+        cameras[cameraId] = instance
+        os_unfair_lock_unlock(&stateLock)
         
         result(cameraId)
     }
     
     private func initializeCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
         
         let captureSession = AVCaptureSession()
         
@@ -173,8 +241,9 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                     return
                 }
                 
-                texture.onSampleBuffer = { [weak self] sampleBuffer in
-                    self?.handleVideoSampleBuffer(sampleBuffer, for: cameraId)
+                texture.onSampleBuffer = { [weak self, weak cameraInstance] sampleBuffer in
+                    guard let self = self, let cameraInstance = cameraInstance else { return }
+                    self.handleVideoSampleBuffer(sampleBuffer, for: cameraInstance)
                 }
                 
                 let textureId = textureRegistry.register(texture)
@@ -182,8 +251,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.textureId = textureId
                 cameraInstance.previewTexture = texture
             }
-            
-            cameras[cameraId] = cameraInstance
             
             if let registrar = registrar {
                 let stateChannel = FlutterEventChannel(
@@ -211,11 +278,19 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func disposeCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(nil)
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(nil)
+            return
+        }
+        cameras.removeValue(forKey: cameraId)
+        os_unfair_lock_unlock(&stateLock)
         
         if cameraInstance.isRecording, let assetWriter = cameraInstance.assetWriter {
             cameraInstance.isRecording = false
@@ -234,18 +309,24 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             eventChannels.removeValue(forKey: cameraId)
         }
         
-        cameras.removeValue(forKey: cameraId)
         result(nil)
     }
     
     private func startRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId],
-              let captureSession = cameraInstance.captureSession else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId],
+              let captureSession = cameraInstance.captureSession else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
         
         let tempDir = FileManager.default.temporaryDirectory
         let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970)).mov")
@@ -312,8 +393,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance.isFirstAudioFrame = true
             cameraInstance.sessionStartTime = .zero
             
-            cameras[cameraId] = cameraInstance
-            
             result(nil)
         } catch {
             result(FlutterError(code: "WRITER_ERROR", message: error.localizedDescription, details: nil))
@@ -322,15 +401,21 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func pauseRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
         
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+        
         if cameraInstance.isRecording && !cameraInstance.isPaused {
             cameraInstance.isPaused = true
-            cameras[cameraId] = cameraInstance
         }
         
         result(nil)
@@ -338,15 +423,21 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func resumeRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
         
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+        
         if cameraInstance.isRecording && cameraInstance.isPaused {
             cameraInstance.isPaused = false
-            cameras[cameraId] = cameraInstance
         }
         
         result(nil)
@@ -354,15 +445,25 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func canSwitchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(false)
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(false)
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+        
         result(cameraInstance.isRecording)
     }
     
     private func canSwitchCurrentCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        os_unfair_lock_lock(&stateLock)
+        defer { os_unfair_lock_unlock(&stateLock) }
         for (_, cameraInstance) in cameras {
             if cameraInstance.isRecording {
                 result(true)
@@ -374,12 +475,19 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func switchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId],
-              let captureSession = cameraInstance.captureSession else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId],
+              let captureSession = cameraInstance.captureSession else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
         
         let newPosition: AVCaptureDevice.Position = cameraInstance.lensPosition == .back ? .front : .back
         
@@ -412,7 +520,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             
             cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
             cameraInstance.lensPosition = newPosition
-            cameras[cameraId] = cameraInstance
             
             if let textureId = cameraInstance.textureId {
                 result(textureId)
@@ -426,11 +533,18 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func stopRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
-              let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId] else {
+              let cameraId = args["cameraId"] as? Int else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
+        
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
         
         guard cameraInstance.isRecording else {
             result(FlutterError(code: "NOT_RECORDING", message: "No active recording", details: nil))
@@ -439,7 +553,6 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         
         cameraInstance.isRecording = false
         cameraInstance.isPaused = false
-        cameras[cameraId] = cameraInstance
         
         guard let assetWriter = cameraInstance.assetWriter else {
             result(FlutterError(code: "WRITER_ERROR", message: "No asset writer available", details: nil))
@@ -458,73 +571,50 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                         result(FlutterError(code: "FINISH_ERROR", message: error, details: nil))
                     }
                 }
-                
-                if var inst = self.cameras[cameraId] {
-                    inst.assetWriter = nil
-                    inst.videoWriterInput = nil
-                    inst.audioWriterInput = nil
-                    inst.pixelBufferAdaptor = nil
-                    inst.recordingURL = nil
-                    self.cameras[cameraId] = inst
-                }
             }
         } else {
-            if var inst = self.cameras[cameraId] {
-                inst.assetWriter = nil
-                inst.videoWriterInput = nil
-                inst.audioWriterInput = nil
-                inst.pixelBufferAdaptor = nil
-                inst.recordingURL = nil
-                self.cameras[cameraId] = inst
-            }
             result(FlutterError(code: "NOT_RECORDING", message: "Recording was not started", details: nil))
         }
     }
     
-    private func handleVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, for cameraId: Int) {
-        sessionQueue.sync {
-            guard var inst = cameras[cameraId] else { return }
-            
-            guard inst.isRecording, let assetWriter = inst.assetWriter else {
-                return
+    private func handleVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, for cameraInstance: CameraInstance) {
+        guard cameraInstance.isRecording,
+              let assetWriter = cameraInstance.assetWriter else {
+            return
+        }
+        
+        guard !cameraInstance.isPaused else {
+            return
+        }
+        
+        let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        
+        if cameraInstance.isFirstVideoFrame {
+            if assetWriter.status == .unknown {
+                assetWriter.startWriting()
+                assetWriter.startSession(atSourceTime: currentTime)
             }
-            
-            guard !inst.isPaused else {
-                return
-            }
-            
-            let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            
-            if inst.isFirstVideoFrame {
-                if assetWriter.status == .unknown {
-                    assetWriter.startWriting()
-                    assetWriter.startSession(atSourceTime: currentTime)
-                }
-                inst.isFirstVideoFrame = false
-                inst.lastVideoSampleTime = currentTime
-                cameras[cameraId] = inst
-                return
-            }
-            
-            if inst.videoIsDisconnected {
-                inst.videoIsDisconnected = false
-                let offset = CMTimeSubtract(currentTime, inst.lastVideoSampleTime)
-                inst.videoTimeOffset = CMTimeAdd(inst.videoTimeOffset, offset)
-                cameras[cameraId] = inst
-                return
-            }
-            
-            inst.lastVideoSampleTime = currentTime
-            cameras[cameraId] = inst
-            
-            let adjustedTime = CMTimeSubtract(currentTime, inst.videoTimeOffset)
-            
-            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-               let adaptor = inst.pixelBufferAdaptor,
-               let videoInput = inst.videoWriterInput,
-               videoInput.isReadyForMoreMediaData {
-                adaptor.append(pixelBuffer, withPresentationTime: adjustedTime)
-            }
+            cameraInstance.isFirstVideoFrame = false
+            cameraInstance.lastVideoSampleTime = currentTime
+            return
+        }
+        
+        if cameraInstance.videoIsDisconnected {
+            cameraInstance.videoIsDisconnected = false
+            let offset = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
+            cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, offset)
+            return
+        }
+        
+        cameraInstance.lastVideoSampleTime = currentTime
+        
+        let adjustedTime = CMTimeSubtract(currentTime, cameraInstance.videoTimeOffset)
+        
+        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+           let adaptor = cameraInstance.pixelBufferAdaptor,
+           let videoInput = cameraInstance.videoWriterInput,
+           videoInput.isReadyForMoreMediaData {
+            adaptor.append(pixelBuffer, withPresentationTime: adjustedTime)
         }
     }
 }
@@ -532,68 +622,61 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
 extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard output is AVCaptureAudioDataOutput else { return }
-        
-        var targetCameraId: Int?
-        sessionQueue.sync {
-            for (cameraId, inst) in cameras {
-                if inst.audioDataOutput === output as? AVCaptureAudioDataOutput {
-                    targetCameraId = cameraId
-                    break
-                }
+        os_unfair_lock_lock(&stateLock)
+        var targetCameraInstance: CameraInstance?
+        for (_, cameraInstance) in cameras {
+            if cameraInstance.audioDataOutput === output as? AVCaptureAudioDataOutput {
+                targetCameraInstance = cameraInstance
+                break
             }
         }
+        os_unfair_lock_unlock(&stateLock)
         
-        guard let cameraId = targetCameraId else { return }
+        guard let cameraInstance = targetCameraInstance else { return }
         
-        sessionQueue.sync {
-            guard var inst = cameras[cameraId],
-                  inst.isRecording,
-                  !inst.isPaused,
-                  let audioInput = inst.audioWriterInput,
-                  audioInput.isReadyForMoreMediaData else {
-                return
-            }
-            
-            let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-            
-            if inst.isFirstAudioFrame {
-                inst.isFirstAudioFrame = false
-                inst.lastAudioSampleTime = currentTime
-                cameras[cameraId] = inst
-                return
-            }
-            
-            if inst.audioIsDisconnected {
-                inst.audioIsDisconnected = false
-                let offset = CMTimeSubtract(currentTime, inst.lastAudioSampleTime)
-                inst.audioTimeOffset = CMTimeAdd(inst.audioTimeOffset, offset)
-                cameras[cameraId] = inst
-                return
-            }
-            
-            inst.lastAudioSampleTime = currentTime
-            cameras[cameraId] = inst
-            
-            let adjustedTime = CMTimeSubtract(currentTime, inst.audioTimeOffset)
-            
-            var adjustedBuffer: CMSampleBuffer?
-            var timingInfo = CMSampleTimingInfo(
-                duration: CMSampleBufferGetDuration(sampleBuffer),
-                presentationTimeStamp: adjustedTime,
-                decodeTimeStamp: .invalid
-            )
-            
-            CMSampleBufferCreateCopyWithNewTiming(
-                allocator: kCFAllocatorDefault,
-                sampleBuffer: sampleBuffer,
-                sampleTimingEntryCount: 1,
-                sampleTimingArray: &timingInfo,
-                sampleBufferOut: &adjustedBuffer
-            )
-            
-            if let adjustedBuffer = adjustedBuffer {
-                audioInput.append(adjustedBuffer)
-            }
+        guard cameraInstance.isRecording,
+              !cameraInstance.isPaused,
+              let audioInput = cameraInstance.audioWriterInput,
+              audioInput.isReadyForMoreMediaData else {
+            return
+        }
+        
+        let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+        
+        if cameraInstance.isFirstAudioFrame {
+            cameraInstance.isFirstAudioFrame = false
+            cameraInstance.lastAudioSampleTime = currentTime
+            return
+        }
+        
+        if cameraInstance.audioIsDisconnected {
+            cameraInstance.audioIsDisconnected = false
+            let offset = CMTimeSubtract(currentTime, cameraInstance.lastAudioSampleTime)
+            cameraInstance.audioTimeOffset = CMTimeAdd(cameraInstance.audioTimeOffset, offset)
+            return
+        }
+        
+        cameraInstance.lastAudioSampleTime = currentTime
+        
+        let adjustedTime = CMTimeSubtract(currentTime, cameraInstance.audioTimeOffset)
+        
+        var adjustedBuffer: CMSampleBuffer?
+        var timingInfo = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sampleBuffer),
+            presentationTimeStamp: adjustedTime,
+            decodeTimeStamp: .invalid
+        )
+        
+        CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timingInfo,
+            sampleBufferOut: &adjustedBuffer
+        )
+        
+        if let adjustedBuffer = adjustedBuffer {
+            audioInput.append(adjustedBuffer)
         }
     }
 }

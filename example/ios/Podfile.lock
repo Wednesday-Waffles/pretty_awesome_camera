@@ -1,7 +1,8 @@
 PODS:
   - Flutter (1.0.0)
-  - gallery_saver (0.0.1):
+  - gal (1.0.0):
     - Flutter
+    - FlutterMacOS
   - integration_test (0.0.1):
     - Flutter
   - permission_handler_apple (9.3.0):
@@ -11,7 +12,7 @@ PODS:
 
 DEPENDENCIES:
   - Flutter (from `Flutter`)
-  - gallery_saver (from `.symlinks/plugins/gallery_saver/ios`)
+  - gal (from `.symlinks/plugins/gal/darwin`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
   - waffle_camera_plugin (from `.symlinks/plugins/waffle_camera_plugin/ios`)
@@ -19,8 +20,8 @@ DEPENDENCIES:
 EXTERNAL SOURCES:
   Flutter:
     :path: Flutter
-  gallery_saver:
-    :path: ".symlinks/plugins/gallery_saver/ios"
+  gal:
+    :path: ".symlinks/plugins/gal/darwin"
   integration_test:
     :path: ".symlinks/plugins/integration_test/ios"
   permission_handler_apple:
@@ -30,7 +31,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
-  gallery_saver: 1d68d1818df11b1afa84a97d1a530463753e92e3
+  gal: baecd024ebfd13c441269ca7404792a7152fde89
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
   waffle_camera_plugin: d697bffbaf2928972c8704005297147917c84390
