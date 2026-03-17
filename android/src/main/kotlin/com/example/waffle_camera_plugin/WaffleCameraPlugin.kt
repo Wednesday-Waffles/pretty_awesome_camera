@@ -185,7 +185,9 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val recorder = Recorder.Builder()
                     .setExecutor(executor)
                     .build()
-                val videoCapture = VideoCapture.withOutput(recorder)
+                val videoCapture = VideoCapture.Builder(recorder)
+                    .setTargetRotation(rotation)
+                    .build()
                 cameraInstance.videoCapture = videoCapture
 
                 val useCaseGroup = UseCaseGroup.Builder()
@@ -671,7 +673,9 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 val recorder = Recorder.Builder()
                     .setExecutor(executor)
                     .build()
-                val videoCapture = VideoCapture.withOutput(recorder)
+                val videoCapture = VideoCapture.Builder(recorder)
+                    .setTargetRotation(switchRotation)
+                    .build()
                 cameraInstance.videoCapture = videoCapture
 
                 val useCaseGroup = UseCaseGroup.Builder()
