@@ -7,21 +7,32 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private var nextCameraId = 0
     private var textureRegistry: FlutterTextureRegistry?
     private var eventChannels: [Int: FlutterEventChannel] = [:]
-    private var eventSinks: [Int: FlutterEventSink] = [:]
     private var registrar: FlutterPluginRegistrar?
-    
-    /// Called when a segment finishes writing to disk (via AVCaptureFileOutputRecordingDelegate).
-    private var recordingFinishedHandler: (() -> Void)?
+    private let sessionQueue = DispatchQueue(label: "com.waffle.camera.session")
     
     struct CameraInstance {
         let cameraId: Int
         var captureSession: AVCaptureSession?
-        var videoOutput: AVCaptureMovieFileOutput?
         var previewTexture: CameraPreviewTexture?
         var textureId: Int64?
         var lensPosition: AVCaptureDevice.Position = .back
         var recordingURL: URL?
-        var segmentURLs: [URL] = []
+        var assetWriter: AVAssetWriter?
+        var videoWriterInput: AVAssetWriterInput?
+        var audioWriterInput: AVAssetWriterInput?
+        var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
+        var audioDataOutput: AVCaptureAudioDataOutput?
+        var isRecording: Bool = false
+        var isPaused: Bool = false
+        var videoIsDisconnected: Bool = false
+        var audioIsDisconnected: Bool = false
+        var videoTimeOffset: CMTime = .zero
+        var audioTimeOffset: CMTime = .zero
+        var lastVideoSampleTime: CMTime = .zero
+        var lastAudioSampleTime: CMTime = .zero
+        var isFirstVideoFrame: Bool = true
+        var isFirstAudioFrame: Bool = true
+        var sessionStartTime: CMTime = .zero
     }
     
     public static func register(with registrar: FlutterPluginRegistrar) {
@@ -32,38 +43,38 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         registrar.addMethodCallDelegate(instance, channel: channel)
     }
     
-     public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
-         switch call.method {
-         case "getAvailableCameras":
-             getAvailableCameras(result: result)
-         case "createCamera":
-             createCamera(call: call, result: result)
-         case "initializeCamera":
-             initializeCamera(call: call, result: result)
-         case "disposeCamera":
-             disposeCamera(call: call, result: result)
-         case "startRecording":
-             startRecording(call: call, result: result)
-         case "pauseRecording":
-             pauseRecording(call: call, result: result)
-         case "resumeRecording":
-             resumeRecording(call: call, result: result)
-         case "stopRecording":
-             stopRecording(call: call, result: result)
-         case "getPlatformVersion":
-             result("iOS " + UIDevice.current.systemVersion)
-          case "isMultiCamSupported":
-              result(AVCaptureMultiCamSession.isMultiCamSupported)
-          case "canSwitchCamera":
-              canSwitchCamera(call: call, result: result)
-          case "switchCamera":
-              switchCamera(call: call, result: result)
-          case "canSwitchCurrentCamera":
-              canSwitchCurrentCamera(call: call, result: result)
-         default:
-             result(FlutterMethodNotImplemented)
-         }
-     }
+    public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        switch call.method {
+        case "getAvailableCameras":
+            getAvailableCameras(result: result)
+        case "createCamera":
+            createCamera(call: call, result: result)
+        case "initializeCamera":
+            initializeCamera(call: call, result: result)
+        case "disposeCamera":
+            disposeCamera(call: call, result: result)
+        case "startRecording":
+            startRecording(call: call, result: result)
+        case "pauseRecording":
+            pauseRecording(call: call, result: result)
+        case "resumeRecording":
+            resumeRecording(call: call, result: result)
+        case "stopRecording":
+            stopRecording(call: call, result: result)
+        case "getPlatformVersion":
+            result("iOS " + UIDevice.current.systemVersion)
+        case "isMultiCamSupported":
+            result(AVCaptureMultiCamSession.isMultiCamSupported)
+        case "canSwitchCamera":
+            canSwitchCamera(call: call, result: result)
+        case "switchCamera":
+            switchCamera(call: call, result: result)
+        case "canSwitchCurrentCamera":
+            canSwitchCurrentCamera(call: call, result: result)
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
     
     private func getAvailableCameras(result: @escaping FlutterResult) {
         let discoverySession = AVCaptureDevice.DiscoverySession(
@@ -142,19 +153,15 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 }
             }
             
-            let videoOutput = AVCaptureMovieFileOutput()
-            if captureSession.canAddOutput(videoOutput) {
-                captureSession.addOutput(videoOutput)
-                
-                if let connection = videoOutput.connection(with: .video) {
-                    if connection.isVideoOrientationSupported {
-                        connection.videoOrientation = .portrait
-                    }
-                }
+            let audioDataOutput = AVCaptureAudioDataOutput()
+            let audioQueue = DispatchQueue(label: "com.waffle.camera.audio")
+            audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
+            if captureSession.canAddOutput(audioDataOutput) {
+                captureSession.addOutput(audioDataOutput)
             }
+            cameraInstance.audioDataOutput = audioDataOutput
             
             cameraInstance.captureSession = captureSession
-            cameraInstance.videoOutput = videoOutput
             
             if let textureRegistry = textureRegistry {
                 guard let texture = CameraPreviewTexture(
@@ -165,6 +172,11 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                     result(FlutterError(code: "TEXTURE_ERROR", message: "Failed to create preview texture", details: nil))
                     return
                 }
+                
+                texture.onSampleBuffer = { [weak self] sampleBuffer in
+                    self?.handleVideoSampleBuffer(sampleBuffer, for: cameraId)
+                }
+                
                 let textureId = textureRegistry.register(texture)
                 texture.textureId = textureId
                 cameraInstance.textureId = textureId
@@ -200,9 +212,14 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private func disposeCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId] else {
+              var cameraInstance = cameras[cameraId] else {
             result(nil)
             return
+        }
+        
+        if cameraInstance.isRecording, let assetWriter = cameraInstance.assetWriter {
+            cameraInstance.isRecording = false
+            assetWriter.finishWriting {}
         }
         
         cameraInstance.captureSession?.stopRunning()
@@ -223,7 +240,7 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
               var cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput else {
+              let captureSession = cameraInstance.captureSession else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
             return
         }
@@ -231,60 +248,121 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         let tempDir = FileManager.default.temporaryDirectory
         let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970)).mov")
         
-        videoOutput.startRecording(to: recordingURL, recordingDelegate: self)
-        cameraInstance.recordingURL = recordingURL
-        cameras[cameraId] = cameraInstance
-        result(nil)
+        do {
+            let assetWriter = try AVAssetWriter(url: recordingURL, fileType: .mov)
+            
+            var videoWidth: Int = 1920
+            var videoHeight: Int = 1080
+            if let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: cameraInstance.lensPosition) {
+                let dimensions = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription)
+                videoWidth = Int(dimensions.width)
+                videoHeight = Int(dimensions.height)
+            }
+            
+            let videoSettings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: videoWidth,
+                AVVideoHeightKey: videoHeight
+            ]
+            let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            videoWriterInput.expectsMediaDataInRealTime = true
+            
+            let sourcePixelBufferAttributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: videoWidth,
+                kCVPixelBufferHeightKey as String: videoHeight
+            ]
+            let pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
+                assetWriterInput: videoWriterInput,
+                sourcePixelBufferAttributes: sourcePixelBufferAttributes
+            )
+            
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 128000
+            ]
+            let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioWriterInput.expectsMediaDataInRealTime = true
+            
+            if assetWriter.canAdd(videoWriterInput) {
+                assetWriter.add(videoWriterInput)
+            }
+            if assetWriter.canAdd(audioWriterInput) {
+                assetWriter.add(audioWriterInput)
+            }
+            
+            cameraInstance.recordingURL = recordingURL
+            cameraInstance.assetWriter = assetWriter
+            cameraInstance.videoWriterInput = videoWriterInput
+            cameraInstance.audioWriterInput = audioWriterInput
+            cameraInstance.pixelBufferAdaptor = pixelBufferAdaptor
+            cameraInstance.isRecording = true
+            cameraInstance.isPaused = false
+            cameraInstance.videoIsDisconnected = false
+            cameraInstance.audioIsDisconnected = false
+            cameraInstance.videoTimeOffset = .zero
+            cameraInstance.audioTimeOffset = .zero
+            cameraInstance.lastVideoSampleTime = .zero
+            cameraInstance.lastAudioSampleTime = .zero
+            cameraInstance.isFirstVideoFrame = true
+            cameraInstance.isFirstAudioFrame = true
+            cameraInstance.sessionStartTime = .zero
+            
+            cameras[cameraId] = cameraInstance
+            
+            result(nil)
+        } catch {
+            result(FlutterError(code: "WRITER_ERROR", message: error.localizedDescription, details: nil))
+        }
     }
     
     private func pauseRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput else {
+              var cameraInstance = cameras[cameraId] else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
         
-        if #available(iOS 18.0, *) {
-            videoOutput.pauseRecording()
-            result(nil)
-        } else {
-            result(FlutterError(code: "UNSUPPORTED", message: "Pause requires iOS 18+", details: nil))
+        if cameraInstance.isRecording && !cameraInstance.isPaused {
+            cameraInstance.isPaused = true
+            cameras[cameraId] = cameraInstance
         }
+        
+        result(nil)
     }
     
     private func resumeRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput else {
+              var cameraInstance = cameras[cameraId] else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
         
-        if #available(iOS 18.0, *) {
-            videoOutput.resumeRecording()
-            result(nil)
-        } else {
-            result(FlutterError(code: "UNSUPPORTED", message: "Resume requires iOS 18+", details: nil))
+        if cameraInstance.isRecording && cameraInstance.isPaused {
+            cameraInstance.isPaused = false
+            cameras[cameraId] = cameraInstance
         }
+        
+        result(nil)
     }
     
     private func canSwitchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput else {
+              let cameraInstance = cameras[cameraId] else {
             result(false)
             return
         }
-        result(videoOutput.isRecording)
+        result(cameraInstance.isRecording)
     }
     
     private func canSwitchCurrentCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         for (_, cameraInstance) in cameras {
-            if let videoOutput = cameraInstance.videoOutput, videoOutput.isRecording {
+            if cameraInstance.isRecording {
                 result(true)
                 return
             }
@@ -295,240 +373,222 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private func switchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              let cameraInstance = cameras[cameraId],
-              cameraInstance.videoOutput != nil,
+              var cameraInstance = cameras[cameraId],
               let captureSession = cameraInstance.captureSession else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
             return
         }
         
-        guard cameraInstance.videoOutput!.isRecording else {
-            result(FlutterError(code: "NOT_RECORDING", message: "No active recording to segment", details: nil))
-            return
+        let newPosition: AVCaptureDevice.Position = cameraInstance.lensPosition == .back ? .front : .back
+        
+        if cameraInstance.isRecording {
+            cameraInstance.videoIsDisconnected = true
+            cameraInstance.audioIsDisconnected = true
         }
         
-        let newPosition: AVCaptureDevice.Position = cameraInstance.lensPosition == .back ? .front : .back
-        let segmentURL = cameraInstance.recordingURL
-        
-        var updatedInst = cameras[cameraId]
-        updatedInst?.recordingURL = nil
-        cameras[cameraId] = updatedInst
-        
-        recordingFinishedHandler = { [weak self] in
-            guard let self = self else { return }
-            
-            if let url = segmentURL {
-                var inst = self.cameras[cameraId]
-                inst?.segmentURLs.append(url)
-                self.cameras[cameraId] = inst
+        do {
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition) else {
+                result(FlutterError(code: "NO_CAMERA", message: "Camera device not available", details: nil))
+                return
             }
             
-            do {
-                guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition) else {
-                    result(FlutterError(code: "NO_CAMERA", message: "Camera device not available", details: nil))
-                    return
-                }
-                
-                let videoInput = try AVCaptureDeviceInput(device: device)
-                
+            let videoInput = try AVCaptureDeviceInput(device: device)
+            
+            sessionQueue.async {
                 captureSession.beginConfiguration()
                 
-                if let inputs = captureSession.inputs as? [AVCaptureDeviceInput] {
-                    for input in inputs {
-                        if input.device.hasMediaType(.video) {
-                            captureSession.removeInput(input)
-                        }
-                    }
+                for input in captureSession.inputs.compactMap({ $0 as? AVCaptureDeviceInput }) where input.device.hasMediaType(.video) {
+                    captureSession.removeInput(input)
                 }
                 
                 if captureSession.canAddInput(videoInput) {
                     captureSession.addInput(videoInput)
                 }
                 
-                // Replace the movie file output. AVCaptureMovieFileOutput retains internal
-                // state from the previous recording that prevents it from properly
-                // reconnecting its video connection to a new input. A fresh instance
-                // guarantees clean connections to both the new video and audio inputs.
-                if let oldOutput = captureSession.outputs.first(where: { $0 is AVCaptureMovieFileOutput }) {
-                    captureSession.removeOutput(oldOutput)
-                }
-                let newVideoOutput = AVCaptureMovieFileOutput()
-                if captureSession.canAddOutput(newVideoOutput) {
-                    captureSession.addOutput(newVideoOutput)
-                    if let connection = newVideoOutput.connection(with: .video) {
-                        if connection.isVideoOrientationSupported {
-                            connection.videoOrientation = .portrait
-                        }
-                    }
-                }
-                
-                // Replace the video data output (preview) for the same reason —
-                // its connection to the old input becomes stale after the swap.
-                if let previewTexture = cameras[cameraId]?.previewTexture {
-                    captureSession.removeOutput(previewTexture.videoDataOutput)
-                }
-                let newPreviewTexture = CameraPreviewTexture(
-                    session: captureSession,
-                    textureRegistry: self.textureRegistry!,
-                    lensPosition: newPosition
-                )
-                guard let newPreviewTexture = newPreviewTexture else {
-                    captureSession.commitConfiguration()
-                    result(FlutterError(code: "PREVIEW_ERROR", message: "Failed to recreate preview", details: nil))
-                    return
-                }
-                if let oldTextureId = cameras[cameraId]?.textureId {
-                    self.textureRegistry?.unregisterTexture(oldTextureId)
-                }
-                let newTextureId = self.textureRegistry!.register(newPreviewTexture)
-                newPreviewTexture.textureId = newTextureId
-                
-                var inst = self.cameras[cameraId]
-                inst?.videoOutput = newVideoOutput
-                inst?.previewTexture = newPreviewTexture
-                inst?.textureId = newTextureId
-                self.cameras[cameraId] = inst
-                
                 captureSession.commitConfiguration()
-                
-                inst = self.cameras[cameraId]
-                inst?.lensPosition = newPosition
-                self.cameras[cameraId] = inst
-                
-                let tempDir = FileManager.default.temporaryDirectory
-                let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970))_segment_\(inst?.segmentURLs.count ?? 0).mov")
-                
-                newVideoOutput.startRecording(to: recordingURL, recordingDelegate: self)
-                
-                var finalInst = self.cameras[cameraId]
-                finalInst?.recordingURL = recordingURL
-                self.cameras[cameraId] = finalInst
-                
-                result(newTextureId)
-            } catch {
-                result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
             }
+            
+            cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
+            cameraInstance.lensPosition = newPosition
+            cameras[cameraId] = cameraInstance
+            
+            if let textureId = cameraInstance.textureId {
+                result(textureId)
+            } else {
+                result(FlutterError(code: "TEXTURE_ERROR", message: "No texture ID available", details: nil))
+            }
+        } catch {
+            result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
         }
-        
-        cameraInstance.videoOutput!.stopRecording()
     }
     
     private func stopRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput else {
+              var cameraInstance = cameras[cameraId] else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
             return
         }
         
-        videoOutput.stopRecording()
-        if let url = cameraInstance.recordingURL {
-            cameraInstance.segmentURLs.append(url)
-            cameras[cameraId] = cameraInstance
-            
-            // Merge segments if multiple, otherwise return single segment
-            if cameraInstance.segmentURLs.count == 1 {
-                result(cameraInstance.segmentURLs[0].path)
-            } else {
-                // Run merge on background thread to avoid blocking UI
-                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                    self?.mergeSegments(segmentURLs: cameraInstance.segmentURLs, cameraId: cameraId, result: result)
+        guard cameraInstance.isRecording else {
+            result(FlutterError(code: "NOT_RECORDING", message: "No active recording", details: nil))
+            return
+        }
+        
+        cameraInstance.isRecording = false
+        cameraInstance.isPaused = false
+        cameras[cameraId] = cameraInstance
+        
+        guard let assetWriter = cameraInstance.assetWriter else {
+            result(FlutterError(code: "WRITER_ERROR", message: "No asset writer available", details: nil))
+            return
+        }
+        
+        let recordingPath = cameraInstance.recordingURL?.path
+        
+        assetWriter.finishWriting {
+            DispatchQueue.main.async {
+                if assetWriter.status == .completed {
+                    result(recordingPath)
+                } else {
+                    let error = assetWriter.error?.localizedDescription ?? "Unknown error"
+                    result(FlutterError(code: "FINISH_ERROR", message: error, details: nil))
                 }
             }
-        } else {
-            result(FlutterError(code: "NO_RECORDING", message: "No active recording", details: nil))
+            
+            if var inst = self.cameras[cameraId] {
+                inst.assetWriter = nil
+                inst.videoWriterInput = nil
+                inst.audioWriterInput = nil
+                inst.pixelBufferAdaptor = nil
+                inst.recordingURL = nil
+                self.cameras[cameraId] = inst
+            }
         }
     }
     
-    private func mergeSegments(segmentURLs: [URL], cameraId: Int, result: @escaping FlutterResult) {
-        let composition = AVMutableComposition()
-        var currentTime = CMTime.zero
-        
-        do {
-            // Add all segments to composition
-            for segmentURL in segmentURLs {
-                let asset = AVAsset(url: segmentURL)
-                
-                // Add video track
-                if let videoTrack = asset.tracks(withMediaType: .video).first,
-                   let compositionVideoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                    try compositionVideoTrack.insertTimeRange(
-                        CMTimeRange(start: .zero, duration: asset.duration),
-                        of: videoTrack,
-                        at: currentTime
-                    )
+    private func handleVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, for cameraId: Int) {
+        sessionQueue.sync {
+            guard var inst = cameras[cameraId] else { return }
+            
+            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) {
+                inst.previewTexture?.latestPixelBuffer = pixelBuffer
+                if let textureId = inst.textureId {
+                    textureRegistry?.textureFrameAvailable(textureId)
                 }
-                
-                // Add audio track
-                if let audioTrack = asset.tracks(withMediaType: .audio).first,
-                   let compositionAudioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid) {
-                    try compositionAudioTrack.insertTimeRange(
-                        CMTimeRange(start: .zero, duration: asset.duration),
-                        of: audioTrack,
-                        at: currentTime
-                    )
-                }
-                
-                currentTime = CMTimeAdd(currentTime, asset.duration)
             }
             
-            // Create merged file URL
-            let tempDir = FileManager.default.temporaryDirectory
-            let mergedURL = tempDir.appendingPathComponent("recording_merged_\(Int(Date().timeIntervalSince1970)).mov")
-            
-            // Export composition
-            guard let exportSession = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
-                cleanupSegmentFiles(segmentURLs: segmentURLs)
-                result(FlutterError(code: "EXPORT_FAILED", message: "Failed to create export session", details: nil))
+            guard inst.isRecording, let assetWriter = inst.assetWriter else {
+                cameras[cameraId] = inst
                 return
             }
             
-            exportSession.outputURL = mergedURL
-            exportSession.outputFileType = .mov
+            guard !inst.isPaused else {
+                cameras[cameraId] = inst
+                return
+            }
             
-            exportSession.exportAsynchronously { [weak self] in
-                switch exportSession.status {
-                case .completed:
-                    // Cleanup segment files after successful merge
-                    self?.cleanupSegmentFiles(segmentURLs: segmentURLs)
-                    
-                    // Clear segments from camera instance
-                    if var cameraInstance = self?.cameras[cameraId] {
-                        cameraInstance.segmentURLs = []
-                        self?.cameras[cameraId] = cameraInstance
-                    }
-                    
-                    result(mergedURL.path)
-                    
-                case .failed:
-                    let error = exportSession.error?.localizedDescription ?? "Unknown error"
-                    // Cleanup segment files on error
-                    self?.cleanupSegmentFiles(segmentURLs: segmentURLs)
-                    result(FlutterError(code: "MERGE_FAILED", message: error, details: nil))
-                    
-                case .cancelled:
-                    // Cleanup segment files on cancellation
-                    self?.cleanupSegmentFiles(segmentURLs: segmentURLs)
-                    result(FlutterError(code: "MERGE_CANCELLED", message: "Merge operation cancelled", details: nil))
-                    
-                default:
+            let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            
+            if inst.isFirstVideoFrame {
+                if assetWriter.status == .unknown {
+                    assetWriter.startWriting()
+                    assetWriter.startSession(atSourceTime: currentTime)
+                    inst.sessionStartTime = currentTime
+                }
+                inst.isFirstVideoFrame = false
+                inst.lastVideoSampleTime = currentTime
+                cameras[cameraId] = inst
+                return
+            }
+            
+            if inst.videoIsDisconnected {
+                inst.videoIsDisconnected = false
+                let offset = CMTimeSubtract(currentTime, inst.lastVideoSampleTime)
+                inst.videoTimeOffset = CMTimeAdd(inst.videoTimeOffset, offset)
+                cameras[cameraId] = inst
+                return
+            }
+            
+            inst.lastVideoSampleTime = currentTime
+            cameras[cameraId] = inst
+            
+            let adjustedTime = CMTimeSubtract(currentTime, inst.videoTimeOffset)
+            
+            if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
+               let adaptor = inst.pixelBufferAdaptor,
+               let videoInput = inst.videoWriterInput,
+               videoInput.isReadyForMoreMediaData {
+                adaptor.append(pixelBuffer, withPresentationTime: adjustedTime)
+            }
+        }
+    }
+}
+
+extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
+    public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard output is AVCaptureAudioDataOutput else { return }
+        
+        var targetCameraId: Int?
+        sessionQueue.sync {
+            for (cameraId, inst) in cameras {
+                if inst.audioDataOutput === output as? AVCaptureAudioDataOutput {
+                    targetCameraId = cameraId
                     break
                 }
             }
-        } catch {
-            cleanupSegmentFiles(segmentURLs: segmentURLs)
-            result(FlutterError(code: "COMPOSITION_ERROR", message: error.localizedDescription, details: nil))
         }
-    }
-    
-    private func cleanupSegmentFiles(segmentURLs: [URL]) {
-        for url in segmentURLs {
-            do {
-                try FileManager.default.removeItem(at: url)
-            } catch {
-                // Log but don't throw - cleanup failure shouldn't break the flow
-                print("Failed to cleanup segment file at \(url): \(error.localizedDescription)")
+        
+        guard let cameraId = targetCameraId else { return }
+        
+        sessionQueue.sync {
+            guard var inst = cameras[cameraId],
+                  inst.isRecording,
+                  !inst.isPaused,
+                  let audioInput = inst.audioWriterInput,
+                  audioInput.isReadyForMoreMediaData else {
+                return
+            }
+            
+            let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            
+            if inst.isFirstAudioFrame {
+                inst.isFirstAudioFrame = false
+                inst.lastAudioSampleTime = currentTime
+                cameras[cameraId] = inst
+                return
+            }
+            
+            if inst.audioIsDisconnected {
+                inst.audioIsDisconnected = false
+                let offset = CMTimeSubtract(currentTime, inst.lastAudioSampleTime)
+                inst.audioTimeOffset = CMTimeAdd(inst.audioTimeOffset, offset)
+                cameras[cameraId] = inst
+                return
+            }
+            
+            inst.lastAudioSampleTime = currentTime
+            cameras[cameraId] = inst
+            
+            let adjustedTime = CMTimeSubtract(currentTime, inst.audioTimeOffset)
+            
+            var adjustedBuffer: CMSampleBuffer?
+            var timingInfo = CMSampleTimingInfo(
+                duration: CMSampleBufferGetDuration(sampleBuffer),
+                presentationTimeStamp: adjustedTime,
+                decodeTimeStamp: .invalid
+            )
+            
+            CMSampleBufferCreateCopyWithNewTiming(
+                allocator: kCFAllocatorDefault,
+                sampleBuffer: sampleBuffer,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timingInfo,
+                sampleBufferOut: &adjustedBuffer
+            )
+            
+            if let adjustedBuffer = adjustedBuffer {
+                audioInput.append(adjustedBuffer)
             }
         }
     }
@@ -542,6 +602,7 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
     let videoDataOutputQueue: DispatchQueue
     weak var textureRegistry: FlutterTextureRegistry?
     var lensPosition: AVCaptureDevice.Position = .back
+    var onSampleBuffer: ((CMSampleBuffer) -> Void)?
     
     init?(session: AVCaptureSession, textureRegistry: FlutterTextureRegistry, lensPosition: AVCaptureDevice.Position) {
         self.captureSession = session
@@ -576,6 +637,8 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
             latestPixelBuffer = pixelBuffer
             textureRegistry?.textureFrameAvailable(textureId)
         }
+        
+        onSampleBuffer?(sampleBuffer)
     }
     
     func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
@@ -598,13 +661,6 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
     }
 }
 
-extension WaffleCameraPlugin: AVCaptureFileOutputRecordingDelegate {
-    public func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
-        recordingFinishedHandler?()
-        recordingFinishedHandler = nil
-    }
-}
-
 class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
     private var eventSink: FlutterEventSink?
     
@@ -619,4 +675,3 @@ class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
         return nil
     }
 }
-
