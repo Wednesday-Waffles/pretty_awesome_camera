@@ -25,6 +25,7 @@ import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
 import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
@@ -44,6 +45,8 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private val cameras = mutableMapOf<Int, CameraInstance>()
     private var nextCameraId = 0
     private val executor = Executors.newSingleThreadExecutor()
+    private val eventChannels = mutableMapOf<Int, EventChannel>()
+    private val streamHandlers = mutableMapOf<Int, RecordingStateStreamHandler>()
 
     data class CameraInstance(
         val cameraId: Int,
@@ -193,7 +196,19 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
                 preview.setSurfaceProvider(createSurfaceProvider(textureEntry))
                 cameraInstance.camera = camera
-                
+
+                val actualCameraId = cameraId!!
+                flutterPluginBinding?.let { pluginBinding ->
+                    val stateChannel = EventChannel(
+                        pluginBinding.binaryMessenger,
+                        "waffle_camera_plugin/recording_state_${actualCameraId}"
+                    )
+                    val streamHandler = RecordingStateStreamHandler()
+                    stateChannel.setStreamHandler(streamHandler)
+                    eventChannels[actualCameraId] = stateChannel
+                    streamHandlers[actualCameraId] = streamHandler
+                }
+
                 val textureId = textureEntry.id()
                 result.success(textureId)
             } catch (e: Exception) {
@@ -220,6 +235,10 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             result.success(null)
             return
         }
+
+        eventChannels[cameraId]?.setStreamHandler(null)
+        eventChannels.remove(cameraId)
+        streamHandlers.remove(cameraId)
 
         val activity = this.activity
         if (activity != null && cameraInstance.camera != null) {
@@ -648,5 +667,18 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onDetachedFromActivity() {
         activity = null
+    }
+}
+
+class RecordingStateStreamHandler : EventChannel.StreamHandler {
+    private var eventSink: EventChannel.EventSink? = null
+
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        eventSink = events
+        events?.success("idle")
+    }
+
+    override fun onCancel(arguments: Any?) {
+        eventSink = null
     }
 }
