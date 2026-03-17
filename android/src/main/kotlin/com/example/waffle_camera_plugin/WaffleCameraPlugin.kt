@@ -15,6 +15,7 @@ import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import io.flutter.embedding.engine.plugins.FlutterPlugin
@@ -39,6 +40,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private val cameras = mutableMapOf<Int, CameraInstance>()
     private val eventChannels = mutableMapOf<Int, EventChannel>()
     private val eventSinks = mutableMapOf<Int, EventChannel.EventSink>()
+    private val textureChangedSinks = mutableMapOf<Int, EventChannel.EventSink>()
     private var nextCameraId = 0
     private val executor = Executors.newSingleThreadExecutor()
 
@@ -190,6 +192,18 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 
                 val textureId = cameraInstance.textureEntry?.id()
                 if (textureId != null) {
+                    val textureChannel = EventChannel(
+                        "waffle_camera_plugin/texture_changed_$cameraId",
+                        binding.binaryMessenger
+                    )
+                    textureChannel.setStreamHandler(object : EventChannel.StreamHandler {
+                        override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
+                            textureChangedSinks[cameraId] = events
+                        }
+                        override fun onCancel(arguments: Any?) {
+                            textureChangedSinks.remove(cameraId)
+                        }
+                    })
                     result.success(textureId)
                 } else {
                     result.error("TEXTURE_ERROR", "Failed to create texture", null)
@@ -387,81 +401,96 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             return
         }
 
-        try {
-            cameraInstance.isSwitching = true
-            
-            cameraInstance.recording?.stop()
-            cameraInstance.recording = null
-            
-            val targetLensDirection = cameraInstance.cameraDescription?.get("lensDirection") as? String
-            val newLensDirection = if (targetLensDirection == "front") "back" else "front"
-            
-            cameraInstance.cameraDescription = cameraInstance.cameraDescription?.toMutableMap()?.apply {
-                put("lensDirection", newLensDirection)
+        cameraInstance.isSwitching = true
+
+        val recording = cameraInstance.recording!!
+        cameraInstance.recording = null
+
+        val newLensDirection = if ((cameraInstance.cameraDescription?.get("lensDirection") as? String) == "front") "back" else "front"
+
+        recording.start(ContextCompat.getMainExecutor(activity)) { event ->
+            if (event is VideoRecordEvent.Finalize) {
+                performCameraSwitch(cameraId, cameraInstance, newLensDirection, activity, result)
             }
-            
-            val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
-            cameraProviderFuture.addListener({
-                try {
-                    val cameraProvider = cameraProviderFuture.get()
-                    
-                    val cameraSelector = when (newLensDirection) {
-                        "front" -> CameraSelector.DEFAULT_FRONT_CAMERA
-                        else -> CameraSelector.DEFAULT_BACK_CAMERA
-                    }
-                    
-                    cameraProvider.unbindAll()
-                    
-                    val recorder = Recorder.Builder()
-                        .setExecutor(executor)
-                        .build()
-                    val videoCapture = VideoCapture.withOutput(recorder)
-                    cameraInstance.videoCapture = videoCapture
-                    
-                    val preview = Preview.Builder()
-                        .setTargetRotation(android.view.Surface.ROTATION_0)
-                        .build()
-                        .also {
-                            val textureEntry = cameraInstance.textureEntry
-                            if (textureEntry != null) {
-                                it.setSurfaceProvider { request ->
-                                    val surface = android.view.Surface(textureEntry.surfaceTexture())
-                                    request.provideSurface(surface, executor) {}
-                                }
+        }
+        recording.stop()
+    }
+
+    private fun performCameraSwitch(
+        cameraId: Int,
+        cameraInstance: CameraInstance,
+        newLensDirection: String,
+        activity: Activity,
+        result: Result
+    ) {
+        cameraInstance.cameraDescription = cameraInstance.cameraDescription?.toMutableMap()?.apply {
+            put("lensDirection", newLensDirection)
+        }
+
+        val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
+        cameraProviderFuture.addListener({
+            try {
+                val cameraProvider = cameraProviderFuture.get()
+
+                val cameraSelector = when (newLensDirection) {
+                    "front" -> CameraSelector.DEFAULT_FRONT_CAMERA
+                    else -> CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
+                cameraProvider.unbindAll()
+
+                val textureEntry = cameraInstance.textureEntry
+                val preview = Preview.Builder()
+                    .setTargetRotation(android.view.Surface.ROTATION_0)
+                    .build()
+                    .also {
+                        if (textureEntry != null) {
+                            it.setSurfaceProvider { request ->
+                                val surface = android.view.Surface(textureEntry.surfaceTexture())
+                                request.provideSurface(surface, executor) {}
                             }
                         }
-                    cameraInstance.preview = preview
-                    
-                    val camera = cameraProvider.bindToLifecycle(
-                        activity as LifecycleOwner,
-                        cameraSelector,
-                        preview,
-                        videoCapture
-                    )
-                    cameraInstance.camera = camera
-                    
-                    val segmentFile = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_${cameraInstance.currentSegmentIndex}.mp4")
-                    cameraInstance.currentSegmentIndex++
-                    cameraInstance.segmentFiles.add(segmentFile)
-                    
-                    val outputOptions = FileOutputOptions.Builder(segmentFile).build()
-                    val recording = videoCapture.output
-                        .prepareRecording(activity, outputOptions)
-                        .withAudioEnabled()
-                        .start(ContextCompat.getMainExecutor(activity)) { event -> }
-                    
-                    cameraInstance.recording = recording
-                    cameraInstance.isSwitching = false
-                    result.success(null)
-                } catch (e: Exception) {
-                    cameraInstance.isSwitching = false
-                    result.error("SWITCH_ERROR", e.message, null)
+                    }
+                cameraInstance.preview = preview
+
+                val recorder = Recorder.Builder()
+                    .setExecutor(executor)
+                    .build()
+                val videoCapture = VideoCapture.withOutput(recorder)
+                cameraInstance.videoCapture = videoCapture
+
+                val camera = cameraProvider.bindToLifecycle(
+                    activity as LifecycleOwner,
+                    cameraSelector,
+                    preview,
+                    videoCapture
+                )
+                cameraInstance.camera = camera
+
+                val segmentFile = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_${cameraInstance.currentSegmentIndex}.mp4")
+                cameraInstance.currentSegmentIndex++
+                cameraInstance.segmentFiles.add(segmentFile)
+
+                val outputOptions = FileOutputOptions.Builder(segmentFile).build()
+                val recording = videoCapture.output
+                    .prepareRecording(activity, outputOptions)
+                    .withAudioEnabled()
+                    .start(ContextCompat.getMainExecutor(activity)) { event -> }
+
+                cameraInstance.recording = recording
+                cameraInstance.isSwitching = false
+
+                val currentTextureId = cameraInstance.textureEntry?.id()
+                if (currentTextureId != null) {
+                    textureChangedSinks[cameraId]?.success(currentTextureId)
                 }
-            }, ContextCompat.getMainExecutor(activity))
-        } catch (e: Exception) {
-            cameraInstance.isSwitching = false
-            result.error("SWITCH_ERROR", e.message, null)
-        }
+
+                result.success(null)
+            } catch (e: Exception) {
+                cameraInstance.isSwitching = false
+                result.error("SWITCH_ERROR", e.message, null)
+            }
+        }, ContextCompat.getMainExecutor(activity))
     }
 
     private fun mergeSegments(segmentFiles: List<File>): File {

@@ -54,6 +54,7 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
 
   RecordingState _recordingState = RecordingState.idle;
   StreamSubscription<RecordingState>? _recordingStateSubscription;
+  StreamSubscription<dynamic>? _textureChangedSubscription;
 
   @override
   void initState() {
@@ -64,6 +65,7 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
   @override
   void dispose() {
     _recordingStateSubscription?.cancel();
+    _textureChangedSubscription?.cancel();
     _disposeCamera();
     super.dispose();
   }
@@ -105,8 +107,8 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
       );
       _cameraId = cameraId;
 
-      // Initialize camera
-      await _platform.initializeCamera(cameraId);
+      // Initialize camera — returns the texture ID
+      final textureId = await _platform.initializeCamera(cameraId);
 
       // Subscribe to recording state changes
       _recordingStateSubscription = _platform
@@ -117,8 +119,22 @@ class _CameraDemoScreenState extends State<CameraDemoScreen> {
             });
           });
 
+      // Subscribe to texture changes (camera switch creates new texture)
+      final textureChannel = EventChannel(
+        'waffle_camera_plugin/texture_changed_$cameraId',
+      );
+      _textureChangedSubscription = textureChannel
+          .receiveBroadcastStream()
+          .listen((dynamic newTextureId) {
+            if (newTextureId is int) {
+              setState(() {
+                _textureId = newTextureId;
+              });
+            }
+          });
+
       setState(() {
-        _textureId = cameraId; // Use camera ID as texture ID for now
+        _textureId = textureId as int?;
         _isInitializing = false;
         _recordedFilePath = null;
       });

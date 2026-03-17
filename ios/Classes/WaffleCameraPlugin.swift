@@ -8,12 +8,17 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private var textureRegistry: FlutterTextureRegistry?
     private var eventChannels: [Int: FlutterEventChannel] = [:]
     private var eventSinks: [Int: FlutterEventSink] = [:]
+    private var textureChangedHandlers: [Int: TextureChangedStreamHandler] = [:]
     private var registrar: FlutterPluginRegistrar?
+    
+    /// Called when a segment finishes writing to disk (via AVCaptureFileOutputRecordingDelegate).
+    private var recordingFinishedHandler: (() -> Void)?
     
     struct CameraInstance {
         let cameraId: Int
         var captureSession: AVCaptureSession?
         var videoOutput: AVCaptureMovieFileOutput?
+        var previewTexture: CameraPreviewTexture?
         var textureId: Int64?
         var lensPosition: AVCaptureDevice.Position = .back
         var recordingURL: URL?
@@ -164,18 +169,27 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 let textureId = textureRegistry.register(texture)
                 texture.textureId = textureId
                 cameraInstance.textureId = textureId
+                cameraInstance.previewTexture = texture
             }
             
             cameras[cameraId] = cameraInstance
             
             if let registrar = registrar {
-                let eventChannel = FlutterEventChannel(
+                let stateChannel = FlutterEventChannel(
                     name: "waffle_camera_plugin/recording_state_\(cameraId)",
                     binaryMessenger: registrar.messenger()
                 )
                 let streamHandler = RecordingStateStreamHandler()
-                eventChannel.setStreamHandler(streamHandler)
-                eventChannels[cameraId] = eventChannel
+                stateChannel.setStreamHandler(streamHandler)
+                eventChannels[cameraId] = stateChannel
+                
+                let textureChannel = FlutterEventChannel(
+                    name: "waffle_camera_plugin/texture_changed_\(cameraId)",
+                    binaryMessenger: registrar.messenger()
+                )
+                let textureStreamHandler = TextureChangedStreamHandler()
+                textureChannel.setStreamHandler(textureStreamHandler)
+                textureChangedHandlers[cameraId] = textureStreamHandler
             }
             
             DispatchQueue.global(qos: .userInitiated).async {
@@ -290,63 +304,124 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     private func switchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int,
-              var cameraInstance = cameras[cameraId],
-              let videoOutput = cameraInstance.videoOutput,
+              let cameraInstance = cameras[cameraId],
+              cameraInstance.videoOutput != nil,
               let captureSession = cameraInstance.captureSession else {
             result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
             return
         }
         
-        // Check if recording
-        guard videoOutput.isRecording else {
+        guard cameraInstance.videoOutput!.isRecording else {
             result(FlutterError(code: "NOT_RECORDING", message: "No active recording to segment", details: nil))
             return
         }
         
-        // 1. Stop current recording and save URL to segments
-        videoOutput.stopRecording()
-        if let url = cameraInstance.recordingURL {
-            cameraInstance.segmentURLs.append(url)
-            cameraInstance.recordingURL = nil
-        }
-        
-        // 2. Remove current video input
-        if let inputs = captureSession.inputs as? [AVCaptureDeviceInput] {
-            for input in inputs {
-                if input.device.hasMediaType(.video) {
-                    captureSession.removeInput(input)
-                }
-            }
-        }
-        
-        // 3. Switch lens position
         let newPosition: AVCaptureDevice.Position = cameraInstance.lensPosition == .back ? .front : .back
-        cameraInstance.lensPosition = newPosition
+        let segmentURL = cameraInstance.recordingURL
         
-        // 4. Add new video input with new camera
-        do {
-            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition) else {
-                result(FlutterError(code: "NO_CAMERA", message: "Camera device not available", details: nil))
-                return
+        var updatedInst = cameras[cameraId]
+        updatedInst?.recordingURL = nil
+        cameras[cameraId] = updatedInst
+        
+        recordingFinishedHandler = { [weak self] in
+            guard let self = self else { return }
+            
+            if let url = segmentURL {
+                var inst = self.cameras[cameraId]
+                inst?.segmentURLs.append(url)
+                self.cameras[cameraId] = inst
             }
             
-            let videoInput = try AVCaptureDeviceInput(device: device)
-            if captureSession.canAddInput(videoInput) {
-                captureSession.addInput(videoInput)
+            do {
+                guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: newPosition) else {
+                    result(FlutterError(code: "NO_CAMERA", message: "Camera device not available", details: nil))
+                    return
+                }
+                
+                let videoInput = try AVCaptureDeviceInput(device: device)
+                
+                captureSession.beginConfiguration()
+                
+                if let inputs = captureSession.inputs as? [AVCaptureDeviceInput] {
+                    for input in inputs {
+                        if input.device.hasMediaType(.video) {
+                            captureSession.removeInput(input)
+                        }
+                    }
+                }
+                
+                if captureSession.canAddInput(videoInput) {
+                    captureSession.addInput(videoInput)
+                }
+                
+                // Replace the movie file output. AVCaptureMovieFileOutput retains internal
+                // state from the previous recording that prevents it from properly
+                // reconnecting its video connection to a new input. A fresh instance
+                // guarantees clean connections to both the new video and audio inputs.
+                if let oldOutput = captureSession.outputs.first(where: { $0 is AVCaptureMovieFileOutput }) {
+                    captureSession.removeOutput(oldOutput)
+                }
+                let newVideoOutput = AVCaptureMovieFileOutput()
+                if captureSession.canAddOutput(newVideoOutput) {
+                    captureSession.addOutput(newVideoOutput)
+                    if let connection = newVideoOutput.connection(with: .video) {
+                        if connection.isVideoOrientationSupported {
+                            connection.videoOrientation = .portrait
+                        }
+                    }
+                }
+                
+                // Replace the video data output (preview) for the same reason —
+                // its connection to the old input becomes stale after the swap.
+                if let previewTexture = cameras[cameraId]?.previewTexture {
+                    captureSession.removeOutput(previewTexture.videoDataOutput)
+                }
+                let newPreviewTexture = CameraPreviewTexture(
+                    session: captureSession,
+                    textureRegistry: self.textureRegistry!,
+                    lensPosition: newPosition
+                )
+                guard let newPreviewTexture = newPreviewTexture else {
+                    captureSession.commitConfiguration()
+                    result(FlutterError(code: "PREVIEW_ERROR", message: "Failed to recreate preview", details: nil))
+                    return
+                }
+                if let oldTextureId = cameras[cameraId]?.textureId {
+                    self.textureRegistry?.unregisterTexture(oldTextureId)
+                }
+                let newTextureId = self.textureRegistry!.register(newPreviewTexture)
+                newPreviewTexture.textureId = newTextureId
+                
+                var inst = self.cameras[cameraId]
+                inst?.videoOutput = newVideoOutput
+                inst?.previewTexture = newPreviewTexture
+                inst?.textureId = newTextureId
+                self.cameras[cameraId] = inst
+                
+                captureSession.commitConfiguration()
+                
+                inst = self.cameras[cameraId]
+                inst?.lensPosition = newPosition
+                self.cameras[cameraId] = inst
+                
+                self.textureChangedHandlers[cameraId]?.emitTextureChanged(newTextureId)
+                
+                let tempDir = FileManager.default.temporaryDirectory
+                let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970))_segment_\(inst?.segmentURLs.count ?? 0).mov")
+                
+                newVideoOutput.startRecording(to: recordingURL, recordingDelegate: self)
+                
+                var finalInst = self.cameras[cameraId]
+                finalInst?.recordingURL = recordingURL
+                self.cameras[cameraId] = finalInst
+                
+                result(nil)
+            } catch {
+                result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
             }
-            
-            // 5. Start new recording segment
-            let tempDir = FileManager.default.temporaryDirectory
-            let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970))_segment_\(cameraInstance.segmentURLs.count).mov")
-            
-            videoOutput.startRecording(to: recordingURL, recordingDelegate: self)
-            cameraInstance.recordingURL = recordingURL
-            cameras[cameraId] = cameraInstance
-            
-            result(nil)
-        } catch {
-            result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
         }
+        
+        cameraInstance.videoOutput!.stopRecording()
     }
     
     private func stopRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -520,10 +595,24 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
         }
         return Unmanaged.passRetained(pixelBuffer)
     }
+    
+    func updateForNewCamera(position: AVCaptureDevice.Position) {
+        lensPosition = position
+        if let connection = videoDataOutput.connection(with: .video) {
+            if connection.isVideoOrientationSupported {
+                connection.videoOrientation = .portrait
+            }
+            if connection.isVideoMirroringSupported {
+                connection.isVideoMirrored = (position == .front)
+            }
+        }
+    }
 }
 
 extension WaffleCameraPlugin: AVCaptureFileOutputRecordingDelegate {
     public func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL, from connections: [AVCaptureConnection], error: Error?) {
+        recordingFinishedHandler?()
+        recordingFinishedHandler = nil
     }
 }
 
@@ -539,5 +628,23 @@ class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
         self.eventSink = nil
         return nil
+    }
+}
+
+class TextureChangedStreamHandler: NSObject, FlutterStreamHandler {
+    private var eventSink: FlutterEventSink?
+    
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        self.eventSink = events
+        return nil
+    }
+    
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        self.eventSink = nil
+        return nil
+    }
+    
+    func emitTextureChanged(_ textureId: Int64) {
+        eventSink?(textureId)
     }
 }
