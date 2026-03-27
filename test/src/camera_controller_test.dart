@@ -12,6 +12,10 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   int nextCameraId = 1;
   int nextTextureId = 101;
   String stopRecordingPath = '/tmp/test.mov';
+  CameraPreviewSize previewSize = const CameraPreviewSize(
+    width: 1440,
+    height: 1080,
+  );
 
   @override
   Future<List<CameraDescription>> getAvailableCameras() async {
@@ -28,7 +32,12 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> initializeCamera(int cameraId) async => nextTextureId++;
+  Future<CameraInitializationResult> initializeCamera(int cameraId) async {
+    return CameraInitializationResult(
+      textureId: nextTextureId++,
+      previewSize: previewSize,
+    );
+  }
 
   @override
   Future<void> startRecording(int cameraId) async {}
@@ -54,7 +63,12 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   Future<bool> canSwitchCamera(int cameraId) async => true;
 
   @override
-  Future<int> switchCamera(int cameraId) async => nextTextureId++;
+  Future<CameraInitializationResult> switchCamera(int cameraId) async {
+    return CameraInitializationResult(
+      textureId: nextTextureId++,
+      previewSize: previewSize,
+    );
+  }
 
   @override
   Future<bool> get canSwitchCurrentCamera async => true;
@@ -106,17 +120,19 @@ void main() {
     expect(controller.config.resolutionPreset, ResolutionPreset.veryHigh);
   });
 
-  test('initialize transitions to ready with ids', () async {
+  test('prewarmUp transitions to ready with ids', () async {
     final controller = CameraController(
       description: description,
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
 
     expect(controller.value, isA<CameraReadyState>());
     expect(controller.cameraId, isNotNull);
     expect(controller.textureId, isNotNull);
+    expect(controller.previewSize, equals(platform.previewSize));
+    expect(controller.previewAspectRatio, closeTo(0.75, 0.0001));
   });
 
   test('create selects the front camera without prewarming', () async {
@@ -199,7 +215,7 @@ void main() {
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
     await controller.startRecording();
     expect(controller.value, isA<CameraRecordingState>());
 
@@ -228,7 +244,7 @@ void main() {
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
     final initialTextureId = controller.textureId;
     await controller.startRecording();
     await controller.switchCamera();
@@ -245,7 +261,7 @@ void main() {
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
     await controller.switchToNextCamera();
 
     expect(controller.value, isA<CameraReadyState>());
@@ -272,7 +288,7 @@ void main() {
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
     platform.recordingStateController.add(RecordingState.recording);
     await Future<void>.delayed(Duration.zero);
     expect(controller.value, isA<CameraRecordingState>());
@@ -292,7 +308,7 @@ void main() {
       platform: platform,
     );
 
-    await controller.initialize();
+    await controller.prewarmUp();
     await controller.disposeCamera();
 
     expect(controller.value, isA<CameraDisposedState>());

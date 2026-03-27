@@ -312,7 +312,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             if let textureId = cameraInstance.textureId {
-                result(textureId)
+                result(cameraInitializationResult(textureId: textureId, captureDimensions: cameraInstance.captureDimensions))
             } else {
                 result(FlutterError(code: "TEXTURE_ERROR", message: "Failed to create texture", details: nil))
             }
@@ -617,13 +617,23 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance.lensPosition = newPosition
             
             if let textureId = cameraInstance.textureId {
-                result(textureId)
+                result(cameraInitializationResult(textureId: textureId, captureDimensions: cameraInstance.captureDimensions))
             } else {
                 result(FlutterError(code: "TEXTURE_ERROR", message: "No texture ID available", details: nil))
             }
         } catch {
             result(FlutterError(code: "SWITCH_ERROR", message: error.localizedDescription, details: nil))
         }
+    }
+
+    private func cameraInitializationResult(textureId: Int64, captureDimensions: CMVideoDimensions) -> [String: Any] {
+        return [
+            "textureId": Int(textureId),
+            "previewSize": [
+                "width": Int(captureDimensions.width),
+                "height": Int(captureDimensions.height)
+            ]
+        ]
     }
     
     private func stopRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {

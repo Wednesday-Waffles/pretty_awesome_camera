@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
+import '../models/camera_initialization_result.dart';
 import '../models/recording_state.dart';
 import 'switching_capability.dart';
 import 'pretty_awesome_camera_platform_interface.dart';
@@ -75,19 +76,24 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> initializeCamera(int cameraId) async {
+  Future<CameraInitializationResult> initializeCamera(int cameraId) async {
     try {
-      final textureId = await methodChannel.invokeMethod<int>(
+      final result = await methodChannel.invokeMethod<dynamic>(
         'initializeCamera',
         {'cameraId': cameraId},
       );
-      if (textureId == null) {
+      if (result == null) {
         throw CameraException(
           code: 'invalid_response',
-          message: 'Platform returned null texture ID',
+          message: 'Platform returned null initialization result',
         );
       }
-      return textureId;
+      if (result is int) {
+        return CameraInitializationResult(textureId: result);
+      }
+      return CameraInitializationResult.fromJson(
+        Map<dynamic, dynamic>.from(result as Map),
+      );
     } on PlatformException catch (e) {
       throw CameraException(
         code: e.code,
@@ -211,18 +217,23 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> switchCamera(int cameraId) async {
+  Future<CameraInitializationResult> switchCamera(int cameraId) async {
     try {
-      final textureId = await methodChannel.invokeMethod<int>('switchCamera', {
+      final result = await methodChannel.invokeMethod<dynamic>('switchCamera', {
         'cameraId': cameraId,
       });
-      if (textureId == null) {
+      if (result == null) {
         throw CameraException(
           code: 'invalid_response',
-          message: 'Platform returned null texture ID from switchCamera',
+          message: 'Platform returned null camera switch result',
         );
       }
-      return textureId;
+      if (result is int) {
+        return CameraInitializationResult(textureId: result);
+      }
+      return CameraInitializationResult.fromJson(
+        Map<dynamic, dynamic>.from(result as Map),
+      );
     } on PlatformException catch (e) {
       throw CameraException(
         code: e.code,

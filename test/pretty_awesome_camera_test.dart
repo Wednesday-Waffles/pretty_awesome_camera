@@ -19,7 +19,7 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
-  Future<int> initializeCamera(int cameraId) {
+  Future<CameraInitializationResult> initializeCamera(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -59,7 +59,7 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
-  Future<int> switchCamera(int cameraId) {
+  Future<CameraInitializationResult> switchCamera(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -91,7 +91,7 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> initializeCamera(int cameraId) {
+  Future<CameraInitializationResult> initializeCamera(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -131,7 +131,7 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> switchCamera(int cameraId) {
+  Future<CameraInitializationResult> switchCamera(int cameraId) {
     throw UnimplementedError();
   }
 

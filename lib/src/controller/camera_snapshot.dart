@@ -1,6 +1,7 @@
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
+import '../models/camera_preview_size.dart';
 import '../models/camera_state.dart';
 
 /// Internal controller snapshot used to track platform ids and transient data.
@@ -9,6 +10,7 @@ class CameraSnapshot {
     required this.state,
     this.cameraId,
     this.textureId,
+    this.previewSize,
   });
 
   CameraSnapshot.uninitialized({required CameraConfig config})
@@ -17,6 +19,7 @@ class CameraSnapshot {
   final CameraState state;
   final int? cameraId;
   final int? textureId;
+  final CameraPreviewSize? previewSize;
 
   CameraConfig get config => switch (state) {
     CameraUninitializedState(:final config) => config,
@@ -76,13 +79,16 @@ class CameraSnapshot {
     CameraState? state,
     int? cameraId,
     int? textureId,
+    CameraPreviewSize? previewSize,
     bool clearCameraId = false,
     bool clearTextureId = false,
+    bool clearPreviewSize = false,
   }) {
     return CameraSnapshot(
       state: state ?? this.state,
       cameraId: clearCameraId ? null : (cameraId ?? this.cameraId),
       textureId: clearTextureId ? null : (textureId ?? this.textureId),
+      previewSize: clearPreviewSize ? null : (previewSize ?? this.previewSize),
     );
   }
 }

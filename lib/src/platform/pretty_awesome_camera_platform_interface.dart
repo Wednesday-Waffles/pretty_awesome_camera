@@ -2,6 +2,7 @@ import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
+import '../models/camera_initialization_result.dart';
 import '../models/recording_state.dart';
 import '../models/switching_path.dart';
 import 'pretty_awesome_camera_method_channel.dart';
@@ -46,8 +47,8 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
 
   /// Initializes the camera with the given ID.
   ///
-  /// Returns the texture ID for rendering the camera preview.
-  Future<int> initializeCamera(int cameraId) {
+  /// Returns the texture ID and preview dimensions for rendering the camera preview.
+  Future<CameraInitializationResult> initializeCamera(int cameraId) {
     throw UnimplementedError('initializeCamera() has not been implemented.');
   }
 
@@ -93,11 +94,10 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
 
   /// Switches to the opposite camera during recording (front ↔ back).
   ///
-  /// Returns the new texture ID if the camera was switched (iOS creates a new
-  /// texture), or the current texture ID unchanged (Android reuses its texture).
+  /// Returns the new texture ID and preview dimensions after switching.
   /// Throws [CameraException] with code 'invalidState' if not currently recording.
   /// Throws [CameraException] with code 'switchInProgress' if a switch is already in progress.
-  Future<int> switchCamera(int cameraId) {
+  Future<CameraInitializationResult> switchCamera(int cameraId) {
     throw UnimplementedError('switchCamera() has not been implemented.');
   }
 

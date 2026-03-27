@@ -3,6 +3,8 @@ export 'src/models/camera_builder_state.dart';
 export 'src/models/camera_config.dart';
 export 'src/models/camera_description.dart';
 export 'src/models/camera_exception.dart';
+export 'src/models/camera_initialization_result.dart';
+export 'src/models/camera_preview_size.dart';
 export 'src/models/camera_state.dart';
 export 'src/models/recording_state.dart';
 export 'src/models/resolution_preset.dart';

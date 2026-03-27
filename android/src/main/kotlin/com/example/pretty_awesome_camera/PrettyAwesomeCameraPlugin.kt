@@ -11,14 +11,12 @@ import android.hardware.camera2.CameraManager
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
-import android.util.Rational
 import android.view.Surface
 import android.view.OrientationEventListener
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
-import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Recorder
@@ -193,7 +191,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 val useCaseGroup = UseCaseGroup.Builder()
                     .addUseCase(preview)
                     .addUseCase(videoCapture)
-                    .setViewPort(ViewPort.Builder(Rational(9, 16), Surface.ROTATION_0).build())
                     .build()
 
                 cameraProvider.unbindAll()
@@ -219,7 +216,15 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 }
 
                 val textureId = textureEntry.id()
-                result.success(textureId)
+                result.success(
+                    mapOf(
+                        "textureId" to textureId,
+                        "previewSize" to mapOf(
+                            "width" to preview.resolutionInfo?.resolution?.width,
+                            "height" to preview.resolutionInfo?.resolution?.height
+                        )
+                    )
+                )
             } catch (e: Exception) {
                 result.error("INIT_ERROR", e.message, null)
             }
@@ -683,7 +688,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 val useCaseGroup = UseCaseGroup.Builder()
                     .addUseCase(preview)
                     .addUseCase(videoCapture)
-                    .setViewPort(ViewPort.Builder(Rational(9, 16), Surface.ROTATION_0).build())
                     .build()
 
                 val camera = cameraProvider.bindToLifecycle(
@@ -724,7 +728,15 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 cameraInstance.isSwitching = false
 
                 val currentTextureId = cameraInstance.textureEntry?.id()
-                result.success(currentTextureId)
+                result.success(
+                    mapOf(
+                        "textureId" to currentTextureId,
+                        "previewSize" to mapOf(
+                            "width" to preview.resolutionInfo?.resolution?.width,
+                            "height" to preview.resolutionInfo?.resolution?.height
+                        )
+                    )
+                )
             } catch (e: Exception) {
                 cameraInstance.isSwitching = false
                 result.error("SWITCH_ERROR", e.message, null)

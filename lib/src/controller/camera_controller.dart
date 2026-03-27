@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
+import '../models/camera_preview_size.dart';
 import '../models/camera_state.dart';
 import '../models/recording_state.dart';
 import '../platform/pretty_awesome_camera_platform_interface.dart';
@@ -142,6 +143,10 @@ class CameraController extends ValueNotifier<CameraState> {
 
   int? get textureId => _cameraSnapshot.textureId;
 
+  CameraPreviewSize? get previewSize => _cameraSnapshot.previewSize;
+
+  double? get previewAspectRatio => previewSize?.portraitAspectRatio;
+
   List<CameraDescription> get availableCameras =>
       List<CameraDescription>.unmodifiable(_availableCameras);
 
@@ -155,10 +160,6 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<String> getSwitchingPath() {
     _assertNotDisposed('getSwitchingPath');
     return _platform.getSwitchingPath();
-  }
-
-  Future<void> initialize() async {
-    await prewarmUp();
   }
 
   Future<void> prewarmUp() {
@@ -197,7 +198,9 @@ class CameraController extends ValueNotifier<CameraState> {
       await _platform.startRecording(cameraId!);
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -214,7 +217,9 @@ class CameraController extends ValueNotifier<CameraState> {
       await _platform.pauseRecording(cameraId!);
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraPausedState()));
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -231,7 +236,9 @@ class CameraController extends ValueNotifier<CameraState> {
       await _platform.resumeRecording(cameraId!);
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -248,15 +255,18 @@ class CameraController extends ValueNotifier<CameraState> {
 
     try {
       final nextDescription = await _resolveNextCameraDescription();
-      final newTextureId = await _platform.switchCamera(cameraId!);
+      final switchResult = await _platform.switchCamera(cameraId!);
       _setValueSafely(
         _cameraSnapshot.copyWith(
           state: _cameraRecordingState(description: nextDescription),
-          textureId: newTextureId,
+          textureId: switchResult.textureId,
+          previewSize: switchResult.previewSize,
         ),
       );
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -285,7 +295,9 @@ class CameraController extends ValueNotifier<CameraState> {
       );
       return filePath;
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -308,6 +320,7 @@ class CameraController extends ValueNotifier<CameraState> {
         state: _cameraDisposedState(),
         clearCameraId: true,
         clearTextureId: true,
+        clearPreviewSize: true,
       ),
     );
   }
@@ -376,23 +389,28 @@ class CameraController extends ValueNotifier<CameraState> {
     );
 
     final previous = _cameraSnapshot;
-    _setValueSafely(_cameraSnapshot.copyWith(state: _cameraInitializingState()));
+    _setValueSafely(
+      _cameraSnapshot.copyWith(state: _cameraInitializingState()),
+    );
 
     try {
       final description = await _resolveDescriptionForInitialization();
       final cameraId = await _platform.createCamera(description, config);
-      final textureId = await _platform.initializeCamera(cameraId);
+      final initializationResult = await _platform.initializeCamera(cameraId);
       await _subscribeToRecordingState(cameraId);
 
       _setValueSafely(
         _cameraSnapshot.copyWith(
           state: _cameraReadyState(description: description),
           cameraId: cameraId,
-          textureId: textureId,
+          textureId: initializationResult.textureId,
+          previewSize: initializationResult.previewSize,
         ),
       );
     } on CameraException catch (error) {
-      _setValueSafely(previous.copyWith(state: _stateWithError(previous.state, error)));
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
       rethrow;
     }
   }
@@ -473,13 +491,17 @@ class CameraController extends ValueNotifier<CameraState> {
         }
         return;
       case RecordingState.recording:
-        _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
+        _setValueSafely(
+          _cameraSnapshot.copyWith(state: _cameraRecordingState()),
+        );
         return;
       case RecordingState.paused:
         _setValueSafely(_cameraSnapshot.copyWith(state: _cameraPausedState()));
         return;
       case RecordingState.switching:
-        _setValueSafely(_cameraSnapshot.copyWith(state: _cameraSwitchingState()));
+        _setValueSafely(
+          _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
+        );
         return;
     }
   }
@@ -496,7 +518,7 @@ class CameraController extends ValueNotifier<CameraState> {
     if (cameraId == null || textureId == null) {
       throw CameraException(
         code: 'not_initialized',
-        message: 'Cannot call $method before initialize() completes.',
+        message: 'Cannot call $method before prewarmUp() completes.',
       );
     }
   }
