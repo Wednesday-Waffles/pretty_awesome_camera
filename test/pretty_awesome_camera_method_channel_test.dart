@@ -1,11 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pretty_awesome_camera/pretty_awesome_camera_method_channel.dart';
-import 'package:pretty_awesome_camera/src/camera_config.dart';
-import 'package:pretty_awesome_camera/src/camera_description.dart';
-import 'package:pretty_awesome_camera/src/camera_exception.dart';
-import 'package:pretty_awesome_camera/src/recording_state.dart';
-import 'package:pretty_awesome_camera/src/resolution_preset.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

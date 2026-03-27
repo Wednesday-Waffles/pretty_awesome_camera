@@ -1,7 +1,7 @@
-import 'camera_config.dart';
-import 'camera_description.dart';
-import 'camera_exception.dart';
-import 'camera_state.dart';
+import '../models/camera_config.dart';
+import '../models/camera_description.dart';
+import '../models/camera_exception.dart';
+import '../models/camera_state.dart';
 
 /// Internal controller snapshot used to track platform ids and transient data.
 class CameraSnapshot {

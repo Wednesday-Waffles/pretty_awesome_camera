@@ -1,6 +1,6 @@
 name: pretty_awesome_camera
 description: "A Pretty Awesome Camera plugin for Flutter."
-version: 0.0.1
+version: 0.1.0
 homepage:
 
 environment:

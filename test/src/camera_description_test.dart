@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pretty_awesome_camera/src/camera_description.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 void main() {
   group('CameraDescription', () {

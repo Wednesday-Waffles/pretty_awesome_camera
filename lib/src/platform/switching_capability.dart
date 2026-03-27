@@ -3,8 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
-import 'camera_exception.dart';
-import 'switching_path.dart';
+import '../models/camera_exception.dart';
+import '../models/switching_path.dart';
 
 /// Detects and manages camera switching capabilities for the current platform.
 ///

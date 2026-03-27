@@ -1,11 +1,11 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-import 'src/camera_config.dart';
-import 'src/camera_description.dart';
-import 'src/camera_exception.dart';
-import 'src/recording_state.dart';
-import 'src/switching_capability.dart';
+import '../models/camera_config.dart';
+import '../models/camera_description.dart';
+import '../models/camera_exception.dart';
+import '../models/recording_state.dart';
+import 'switching_capability.dart';
 import 'pretty_awesome_camera_platform_interface.dart';
 
 /// An implementation of [PrettyAwesomeCameraPlatform] that uses method channels.

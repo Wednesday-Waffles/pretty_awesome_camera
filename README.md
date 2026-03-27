@@ -2,6 +2,9 @@
 
 `pretty_awesome_camera` is a Flutter camera plugin focused on a controller-first API.
 
+> This plugin is currently a work in progress.
+> iOS is the only stable platform for now.
+
 You can:
 - preload available camera metadata when the app starts
 - create a `CameraController` before opening the camera screen

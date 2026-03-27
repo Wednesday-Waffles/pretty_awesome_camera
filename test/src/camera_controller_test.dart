@@ -1,14 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:pretty_awesome_camera/camera_controller.dart';
-import 'package:pretty_awesome_camera/src/camera_config.dart';
-import 'package:pretty_awesome_camera/src/camera_description.dart';
-import 'package:pretty_awesome_camera/src/camera_exception.dart';
-import 'package:pretty_awesome_camera/src/camera_state.dart';
-import 'package:pretty_awesome_camera/src/recording_state.dart';
-import 'package:pretty_awesome_camera/src/resolution_preset.dart';
-import 'package:pretty_awesome_camera/pretty_awesome_camera_platform_interface.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   final StreamController<RecordingState> recordingStateController =

@@ -1,9 +1,9 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
-import 'src/camera_config.dart';
-import 'src/camera_description.dart';
-import 'src/recording_state.dart';
-import 'src/switching_path.dart';
+import '../models/camera_config.dart';
+import '../models/camera_description.dart';
+import '../models/recording_state.dart';
+import '../models/switching_path.dart';
 import 'pretty_awesome_camera_method_channel.dart';
 
 abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {

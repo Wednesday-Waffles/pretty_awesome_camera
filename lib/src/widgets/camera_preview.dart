@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
-import 'camera_controller.dart';
-import 'src/camera_state.dart';
+import '../controller/camera_controller.dart';
+import '../models/camera_state.dart';
 
 /// A widget that displays the preview for a [CameraController].
 class CameraPreview extends StatelessWidget {

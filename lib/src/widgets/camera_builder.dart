@@ -1,12 +1,12 @@
 import 'package:flutter/material.dart';
 
-import 'camera_controller.dart';
+import '../controller/camera_controller.dart';
+import '../models/camera_builder_state.dart';
+import '../models/camera_config.dart';
+import '../models/camera_description.dart';
+import '../models/camera_exception.dart';
+import '../models/camera_state.dart';
 import 'camera_preview.dart';
-import 'src/camera_builder_state.dart';
-import 'src/camera_config.dart';
-import 'src/camera_description.dart';
-import 'src/camera_exception.dart';
-import 'src/camera_state.dart';
 
 typedef CameraLayoutBuilder =
     Widget Function(

@@ -2,13 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
-import 'src/camera_config.dart';
-import 'src/camera_description.dart';
-import 'src/camera_exception.dart';
-import 'src/camera_snapshot.dart';
-import 'src/camera_state.dart';
-import 'src/recording_state.dart';
-import 'pretty_awesome_camera_platform_interface.dart';
+import '../models/camera_config.dart';
+import '../models/camera_description.dart';
+import '../models/camera_exception.dart';
+import '../models/camera_state.dart';
+import '../models/recording_state.dart';
+import '../platform/pretty_awesome_camera_platform_interface.dart';
+import 'camera_snapshot.dart';
 
 /// High-level controller that owns camera lifecycle and recording transitions.
 class CameraController extends ValueNotifier<CameraState> {

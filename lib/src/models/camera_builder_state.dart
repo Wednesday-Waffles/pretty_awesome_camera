@@ -1,4 +1,4 @@
-import '../camera_controller.dart';
+import '../controller/camera_controller.dart';
 import 'camera_config.dart';
 import 'camera_description.dart';
 import 'camera_exception.dart';
