@@ -1,8 +1,8 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
+import 'src/camera_config.dart';
 import 'src/camera_description.dart';
 import 'src/recording_state.dart';
-import 'src/resolution_preset.dart';
 import 'src/switching_path.dart';
 import 'waffle_camera_plugin_method_channel.dart';
 
@@ -40,7 +40,7 @@ abstract class WaffleCameraPluginPlatform extends PlatformInterface {
   /// Creates a camera instance with the given description and resolution preset.
   ///
   /// Returns the camera ID for use in subsequent operations.
-  Future<int> createCamera(CameraDescription camera, ResolutionPreset preset) {
+  Future<int> createCamera(CameraDescription camera, CameraConfig config) {
     throw UnimplementedError('createCamera() has not been implemented.');
   }
 

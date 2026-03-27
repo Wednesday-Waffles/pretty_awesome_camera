@@ -134,7 +134,6 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     private fun createCamera(call: MethodCall, result: Result) {
         val cameraDescription = call.argument<Map<String, Any>>("camera")
-        val preset = call.argument<String>("preset")
         
         if (cameraDescription == null) {
             result.error("INVALID_ARGUMENT", "Camera description is required", null)

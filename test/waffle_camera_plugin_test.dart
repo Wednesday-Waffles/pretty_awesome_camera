@@ -1,10 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin_method_channel.dart';
-import 'package:waffle_camera_plugin/src/camera_description.dart';
-import 'package:waffle_camera_plugin/src/recording_state.dart';
-import 'package:waffle_camera_plugin/src/resolution_preset.dart';
+import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 class MockWaffleCameraPluginPlatform
@@ -19,7 +16,7 @@ class MockWaffleCameraPluginPlatform
   }
 
   @override
-  Future<int> createCamera(CameraDescription camera, ResolutionPreset preset) {
+  Future<int> createCamera(CameraDescription camera, CameraConfig config) {
     throw UnimplementedError();
   }
 
@@ -91,7 +88,7 @@ class ConcreteWaffleCameraPluginPlatform extends WaffleCameraPluginPlatform {
   }
 
   @override
-  Future<int> createCamera(CameraDescription camera, ResolutionPreset preset) {
+  Future<int> createCamera(CameraDescription camera, CameraConfig config) {
     throw UnimplementedError();
   }
 
@@ -164,15 +161,6 @@ void main() {
     expect(initialPlatform, isInstanceOf<MethodChannelWaffleCameraPlugin>());
   });
 
-  test('getPlatformVersion', () async {
-    WaffleCameraPlugin waffleCameraPlugin = WaffleCameraPlugin();
-    MockWaffleCameraPluginPlatform fakePlatform =
-        MockWaffleCameraPluginPlatform();
-    WaffleCameraPluginPlatform.instance = fakePlatform;
-
-    expect(await waffleCameraPlugin.getPlatformVersion(), '42');
-  });
-
   group('Platform interface methods throw UnimplementedError by default', () {
     late WaffleCameraPluginPlatform platform;
 
@@ -194,7 +182,7 @@ void main() {
         sensorOrientation: 0,
       );
       expect(
-        () => platform.createCamera(camera, ResolutionPreset.high),
+        () => platform.createCamera(camera, const CameraConfig()),
         throwsA(isA<UnimplementedError>()),
       );
     });

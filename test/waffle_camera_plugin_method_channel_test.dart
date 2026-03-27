@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:waffle_camera_plugin/waffle_camera_plugin_method_channel.dart';
+import 'package:waffle_camera_plugin/src/camera_config.dart';
 import 'package:waffle_camera_plugin/src/camera_description.dart';
 import 'package:waffle_camera_plugin/src/camera_exception.dart';
 import 'package:waffle_camera_plugin/src/recording_state.dart';
@@ -112,7 +113,7 @@ void main() {
       );
       final cameraId = await platform.createCamera(
         camera,
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       expect(cameraId, 0);
     });
@@ -132,7 +133,10 @@ void main() {
         sensorOrientation: 90,
       );
       expect(
-        () => platform.createCamera(camera, ResolutionPreset.high),
+        () => platform.createCamera(
+          camera,
+          const CameraConfig(resolutionPreset: ResolutionPreset.high),
+        ),
         throwsA(
           isA<CameraException>().having(
             (e) => e.code,
@@ -161,7 +165,10 @@ void main() {
         sensorOrientation: 90,
       );
       expect(
-        () => platform.createCamera(camera, ResolutionPreset.high),
+        () => platform.createCamera(
+          camera,
+          const CameraConfig(resolutionPreset: ResolutionPreset.high),
+        ),
         throwsA(
           isA<CameraException>().having((e) => e.code, 'code', 'create_error'),
         ),

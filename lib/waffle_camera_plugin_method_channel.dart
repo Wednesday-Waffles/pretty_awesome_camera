@@ -1,10 +1,10 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import 'src/camera_config.dart';
 import 'src/camera_description.dart';
 import 'src/camera_exception.dart';
 import 'src/recording_state.dart';
-import 'src/resolution_preset.dart';
 import 'src/switching_capability.dart';
 import 'waffle_camera_plugin_platform_interface.dart';
 
@@ -53,14 +53,11 @@ class MethodChannelWaffleCameraPlugin extends WaffleCameraPluginPlatform {
   }
 
   @override
-  Future<int> createCamera(
-    CameraDescription camera,
-    ResolutionPreset preset,
-  ) async {
+  Future<int> createCamera(CameraDescription camera, CameraConfig config) async {
     try {
       final cameraId = await methodChannel.invokeMethod<int>('createCamera', {
         'camera': camera.toJson(),
-        'preset': preset.name,
+        'preset': config.resolutionPreset.name,
       });
       if (cameraId == null) {
         throw CameraException(

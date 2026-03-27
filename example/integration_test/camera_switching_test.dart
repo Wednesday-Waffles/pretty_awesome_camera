@@ -20,7 +20,7 @@ void main() {
       // Create and initialize camera
       final cameraId = await platform.createCamera(
         cameras.first,
-        ResolutionPreset.medium,
+        const CameraConfig(resolutionPreset: ResolutionPreset.medium),
       );
       expect(cameraId, isNotNull);
 
@@ -53,7 +53,7 @@ void main() {
       // Create and initialize camera
       final cameraId = await platform.createCamera(
         cameras.first,
-        ResolutionPreset.medium,
+        const CameraConfig(resolutionPreset: ResolutionPreset.medium),
       );
       await platform.initializeCamera(cameraId);
 
@@ -83,7 +83,7 @@ void main() {
       // Create and initialize camera
       final cameraId = await platform.createCamera(
         cameras.first,
-        ResolutionPreset.medium,
+        const CameraConfig(resolutionPreset: ResolutionPreset.medium),
       );
       await platform.initializeCamera(cameraId);
 
@@ -113,7 +113,7 @@ void main() {
         // Create and initialize camera
         final cameraId = await platform.createCamera(
           cameras.first,
-          ResolutionPreset.medium,
+          const CameraConfig(resolutionPreset: ResolutionPreset.medium),
         );
         await platform.initializeCamera(cameraId);
 
@@ -147,7 +147,7 @@ void main() {
         // Create and initialize camera
         final cameraId = await platform.createCamera(
           cameras.first,
-          ResolutionPreset.medium,
+          const CameraConfig(resolutionPreset: ResolutionPreset.medium),
         );
         await platform.initializeCamera(cameraId);
 
@@ -175,7 +175,7 @@ void main() {
       // Create and initialize camera
       final cameraId = await platform.createCamera(
         cameras.first,
-        ResolutionPreset.medium,
+        const CameraConfig(resolutionPreset: ResolutionPreset.medium),
       );
       await platform.initializeCamera(cameraId);
 

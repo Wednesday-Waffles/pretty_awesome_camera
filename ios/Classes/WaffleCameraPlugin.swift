@@ -33,6 +33,8 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         private var _isPaused: Bool = false
         private var _videoIsDisconnected: Bool = false
         private var _audioIsDisconnected: Bool = false
+        private var _recordingWarmupFramesRemaining: Int = 0
+        private var _hasPrewarmedRecordingPipeline: Bool = false
         var videoTimeOffset: CMTime = .zero
         var audioTimeOffset: CMTime = .zero
         var lastVideoSampleTime: CMTime = .zero
@@ -93,6 +95,32 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             set {
                 os_unfair_lock_lock(&recordingLock)
                 _audioIsDisconnected = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+
+        var recordingWarmupFramesRemaining: Int {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _recordingWarmupFramesRemaining
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _recordingWarmupFramesRemaining = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+
+        var hasPrewarmedRecordingPipeline: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _hasPrewarmedRecordingPipeline
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _hasPrewarmedRecordingPipeline = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
@@ -169,18 +197,15 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     }
     
     private func createCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
-        guard let args = call.arguments as? [String: Any],
-              let cameraDescription = args["camera"] as? [String: Any] else {
-            result(FlutterError(code: "INVALID_ARGUMENT", message: "Camera description required", details: nil))
-            return
-        }
+        let args = call.arguments as? [String: Any]
+        let cameraDescription = args?["camera"] as? [String: Any]
         
         let cameraId = nextCameraId
         nextCameraId += 1
         
-        let lensDirection = cameraDescription["lensDirection"] as? String ?? "back"
+        let lensDirection = cameraDescription?["lensDirection"] as? String ?? "front"
         let position: AVCaptureDevice.Position = lensDirection == "front" ? .front : .back
-        let presetName = (args["preset"] as? String) ?? "high"
+        let presetName = (args?["preset"] as? String) ?? "high"
         
         let instance = CameraInstance(cameraId: cameraId)
         instance.lensPosition = position
@@ -280,6 +305,11 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
                 captureSession.startRunning()
                 cameraInstance.previewTexture?.updateForNewCamera(position: cameraInstance.lensPosition)
             }
+
+            sessionQueue.async { [weak self, weak cameraInstance] in
+                guard let self = self, let cameraInstance = cameraInstance else { return }
+                self.prewarmRecordingPipeline(for: cameraInstance)
+            }
             
             if let textureId = cameraInstance.textureId {
                 result(textureId)
@@ -344,72 +374,69 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         }
         os_unfair_lock_unlock(&stateLock)
 
-        let tempDir = FileManager.default.temporaryDirectory
-        let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970)).mov")
-        
-        do {
-            let assetWriter = try AVAssetWriter(url: recordingURL, fileType: .mov)
+        sessionQueue.async {
+            let tempDir = FileManager.default.temporaryDirectory
+            let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970)).mov")
             
-            let videoWidth = Int(cameraInstance.captureDimensions.width)
-            let videoHeight = Int(cameraInstance.captureDimensions.height)
-            
-            let outputWidth = videoHeight
-            let outputHeight = videoWidth
+            do {
+                let assetWriter = try AVAssetWriter(url: recordingURL, fileType: .mov)
+                
+                let videoWidth = Int(cameraInstance.captureDimensions.width)
+                let videoHeight = Int(cameraInstance.captureDimensions.height)
+                
+                let outputWidth = videoHeight
+                let outputHeight = videoWidth
 
-            let videoSettings: [String: Any] = [
-                AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: outputWidth,
-                AVVideoHeightKey: outputHeight
-            ]
-            let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            videoWriterInput.expectsMediaDataInRealTime = true
-            
-            let sourcePixelBufferAttributes: [String: Any] = [
-                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                kCVPixelBufferWidthKey as String: outputWidth,
-                kCVPixelBufferHeightKey as String: outputHeight
-            ]
-            let pixelBufferAdaptor = AVAssetWriterInputPixelBufferAdaptor(
-                assetWriterInput: videoWriterInput,
-                sourcePixelBufferAttributes: sourcePixelBufferAttributes
-            )
-            
+                let videoSettings: [String: Any] = [
+                    AVVideoCodecKey: AVVideoCodecType.h264,
+                    AVVideoWidthKey: outputWidth,
+                    AVVideoHeightKey: outputHeight
+                ]
+                let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+                videoWriterInput.expectsMediaDataInRealTime = true
+                
             let audioSettings: [String: Any] = [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 44100,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 128000
-            ]
-            let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            audioWriterInput.expectsMediaDataInRealTime = true
-            
-            if assetWriter.canAdd(videoWriterInput) {
-                assetWriter.add(videoWriterInput)
-            }
-            if assetWriter.canAdd(audioWriterInput) {
-                assetWriter.add(audioWriterInput)
-            }
-            
+                    AVEncoderBitRateKey: 128000
+                ]
+                let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+                audioWriterInput.expectsMediaDataInRealTime = true
+                
+                if assetWriter.canAdd(videoWriterInput) {
+                    assetWriter.add(videoWriterInput)
+                }
+                if assetWriter.canAdd(audioWriterInput) {
+                    assetWriter.add(audioWriterInput)
+                }
+                
             cameraInstance.recordingURL = recordingURL
             cameraInstance.assetWriter = assetWriter
             cameraInstance.videoWriterInput = videoWriterInput
             cameraInstance.audioWriterInput = audioWriterInput
-            cameraInstance.pixelBufferAdaptor = pixelBufferAdaptor
+            cameraInstance.pixelBufferAdaptor = nil
             cameraInstance.isRecording = true
             cameraInstance.isPaused = false
             cameraInstance.videoIsDisconnected = false
             cameraInstance.audioIsDisconnected = false
-            cameraInstance.videoTimeOffset = .zero
-            cameraInstance.audioTimeOffset = .zero
-            cameraInstance.lastVideoSampleTime = .zero
-            cameraInstance.lastAudioSampleTime = .zero
-            cameraInstance.isFirstVideoFrame = true
-            cameraInstance.isFirstAudioFrame = true
-            cameraInstance.sessionStartTime = .zero
-            
-            result(nil)
-        } catch {
-            result(FlutterError(code: "WRITER_ERROR", message: error.localizedDescription, details: nil))
+                cameraInstance.videoTimeOffset = .zero
+                cameraInstance.audioTimeOffset = .zero
+                cameraInstance.lastVideoSampleTime = .zero
+                cameraInstance.lastAudioSampleTime = .zero
+                cameraInstance.isFirstVideoFrame = true
+                cameraInstance.isFirstAudioFrame = true
+                cameraInstance.sessionStartTime = .zero
+                cameraInstance.recordingWarmupFramesRemaining = 3
+                
+                DispatchQueue.main.async {
+                    result(nil)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "WRITER_ERROR", message: error.localizedDescription, details: nil))
+                }
+            }
         }
     }
     
@@ -647,7 +674,8 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     
     private func handleVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, for cameraInstance: CameraInstance) {
         guard cameraInstance.isRecording,
-              let assetWriter = cameraInstance.assetWriter else {
+              let assetWriter = cameraInstance.assetWriter,
+              let videoInput = cameraInstance.videoWriterInput else {
             return
         }
         
@@ -658,31 +686,56 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
         let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
         
         if cameraInstance.isFirstVideoFrame {
+            if cameraInstance.recordingWarmupFramesRemaining > 0 {
+                cameraInstance.recordingWarmupFramesRemaining -= 1
+                cameraInstance.lastVideoSampleTime = currentTime
+                return
+            }
+
             if assetWriter.status == .unknown {
                 assetWriter.startWriting()
                 assetWriter.startSession(atSourceTime: currentTime)
+                cameraInstance.sessionStartTime = currentTime
             }
             cameraInstance.isFirstVideoFrame = false
             cameraInstance.lastVideoSampleTime = currentTime
-            return
+        } else {
+            if cameraInstance.videoIsDisconnected {
+                cameraInstance.videoIsDisconnected = false
+                let offset = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
+                cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, offset)
+                return
+            }
+
+            if !videoInput.isReadyForMoreMediaData {
+                let droppedDuration = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
+                cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, droppedDuration)
+                cameraInstance.lastVideoSampleTime = currentTime
+                return
+            }
+
+            cameraInstance.lastVideoSampleTime = currentTime
         }
-        
-        if cameraInstance.videoIsDisconnected {
-            cameraInstance.videoIsDisconnected = false
-            let offset = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
-            cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, offset)
-            return
-        }
-        
-        cameraInstance.lastVideoSampleTime = currentTime
         
         let adjustedTime = CMTimeSubtract(currentTime, cameraInstance.videoTimeOffset)
-        
-        if let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
-           let adaptor = cameraInstance.pixelBufferAdaptor,
-           let videoInput = cameraInstance.videoWriterInput,
-           videoInput.isReadyForMoreMediaData {
-            adaptor.append(pixelBuffer, withPresentationTime: adjustedTime)
+
+        var adjustedBuffer: CMSampleBuffer?
+        var timingInfo = CMSampleTimingInfo(
+            duration: CMSampleBufferGetDuration(sampleBuffer),
+            presentationTimeStamp: adjustedTime,
+            decodeTimeStamp: .invalid
+        )
+
+        CMSampleBufferCreateCopyWithNewTiming(
+            allocator: kCFAllocatorDefault,
+            sampleBuffer: sampleBuffer,
+            sampleTimingEntryCount: 1,
+            sampleTimingArray: &timingInfo,
+            sampleBufferOut: &adjustedBuffer
+        )
+
+        if let adjustedBuffer = adjustedBuffer {
+            videoInput.append(adjustedBuffer)
         }
     }
 
@@ -727,6 +780,63 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             return CMVideoDimensions(width: 1280, height: 720)
         }
     }
+
+    private func prewarmRecordingPipeline(for cameraInstance: CameraInstance) {
+        guard !cameraInstance.hasPrewarmedRecordingPipeline else {
+            return
+        }
+
+        let tempDir = FileManager.default.temporaryDirectory
+        let warmupURL = tempDir.appendingPathComponent("warmup_\(cameraInstance.cameraId).mov")
+
+        do {
+            if FileManager.default.fileExists(atPath: warmupURL.path) {
+                try FileManager.default.removeItem(at: warmupURL)
+            }
+
+            let assetWriter = try AVAssetWriter(url: warmupURL, fileType: .mov)
+
+            let videoWidth = Int(cameraInstance.captureDimensions.width)
+            let videoHeight = Int(cameraInstance.captureDimensions.height)
+            let outputWidth = videoHeight
+            let outputHeight = videoWidth
+
+            let videoSettings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: outputWidth,
+                AVVideoHeightKey: outputHeight
+            ]
+            let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
+            videoWriterInput.expectsMediaDataInRealTime = true
+
+            let audioSettings: [String: Any] = [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 44100,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 128000
+            ]
+            let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            audioWriterInput.expectsMediaDataInRealTime = true
+
+            if assetWriter.canAdd(videoWriterInput) {
+                assetWriter.add(videoWriterInput)
+            }
+            if assetWriter.canAdd(audioWriterInput) {
+                assetWriter.add(audioWriterInput)
+            }
+
+            assetWriter.startWriting()
+            assetWriter.startSession(atSourceTime: .zero)
+            videoWriterInput.markAsFinished()
+            audioWriterInput.markAsFinished()
+            assetWriter.finishWriting {
+                try? FileManager.default.removeItem(at: warmupURL)
+            }
+            cameraInstance.hasPrewarmedRecordingPipeline = true
+        } catch {
+            // Best-effort warmup only.
+        }
+    }
 }
 
 extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
@@ -746,12 +856,16 @@ extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
         
         guard cameraInstance.isRecording,
               !cameraInstance.isPaused,
-              let audioInput = cameraInstance.audioWriterInput,
-              audioInput.isReadyForMoreMediaData else {
+              let audioInput = cameraInstance.audioWriterInput else {
             return
         }
         
         let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        guard cameraInstance.sessionStartTime != .zero else {
+            cameraInstance.lastAudioSampleTime = currentTime
+            return
+        }
         
         if cameraInstance.isFirstAudioFrame {
             cameraInstance.isFirstAudioFrame = false
@@ -763,6 +877,13 @@ extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
             cameraInstance.audioIsDisconnected = false
             let offset = CMTimeSubtract(currentTime, cameraInstance.lastAudioSampleTime)
             cameraInstance.audioTimeOffset = CMTimeAdd(cameraInstance.audioTimeOffset, offset)
+            return
+        }
+
+        if !audioInput.isReadyForMoreMediaData {
+            let droppedDuration = CMTimeSubtract(currentTime, cameraInstance.lastAudioSampleTime)
+            cameraInstance.audioTimeOffset = CMTimeAdd(cameraInstance.audioTimeOffset, droppedDuration)
+            cameraInstance.lastAudioSampleTime = currentTime
             return
         }
         

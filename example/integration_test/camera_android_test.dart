@@ -32,7 +32,7 @@ void main() {
       // Create camera
       final cameraId = await platform.createCamera(
         camera,
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       expect(cameraId, isNonNegative);
 
@@ -75,7 +75,7 @@ void main() {
 
       final cameraId = await platform.createCamera(
         camera,
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       await platform.initializeCamera(cameraId);
 
@@ -94,7 +94,7 @@ void main() {
 
       final cameraId = await platform.createCamera(
         camera,
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       await platform.initializeCamera(cameraId);
 
@@ -118,7 +118,7 @@ void main() {
 
       final cameraId = await platform.createCamera(
         camera,
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       await platform.initializeCamera(cameraId);
 
@@ -147,7 +147,7 @@ void main() {
       // Test first camera
       final cameraId1 = await platform.createCamera(
         cameras[0],
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       await platform.initializeCamera(cameraId1);
       await platform.disposeCamera(cameraId1);
@@ -155,7 +155,7 @@ void main() {
       // Test second camera
       final cameraId2 = await platform.createCamera(
         cameras[1],
-        ResolutionPreset.high,
+        const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       await platform.initializeCamera(cameraId2);
       await platform.disposeCamera(cameraId2);
@@ -166,7 +166,10 @@ void main() {
       final camera = cameras.first;
 
       for (final preset in ResolutionPreset.values) {
-        final cameraId = await platform.createCamera(camera, preset);
+        final cameraId = await platform.createCamera(
+          camera,
+          CameraConfig(resolutionPreset: preset),
+        );
         await platform.initializeCamera(cameraId);
 
         // Quick recording test
