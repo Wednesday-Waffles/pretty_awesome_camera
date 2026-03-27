@@ -1,9 +1,9 @@
 #
 # To learn more about a Podspec see http://guides.cocoapods.org/syntax/podspec.html.
-# Run `pod lib lint waffle_camera_plugin.podspec` to validate before publishing.
+# Run `pod lib lint pretty_awesome_camera.podspec` to validate before publishing.
 #
 Pod::Spec.new do |s|
-  s.name             = 'waffle_camera_plugin'
+  s.name             = 'pretty_awesome_camera'
   s.version          = '0.0.1'
   s.summary          = 'A new Flutter plugin project.'
   s.description      = <<-DESC
@@ -25,5 +25,5 @@ A new Flutter plugin project.
   # required reason APIs, update the PrivacyInfo.xcprivacy file to describe your
   # plugin's privacy impact, and then uncomment this line. For more information,
   # see https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
-  # s.resource_bundles = {'waffle_camera_plugin_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
+  # s.resource_bundles = {'pretty_awesome_camera_privacy' => ['Resources/PrivacyInfo.xcprivacy']}
 end

@@ -1,4 +1,4 @@
-package com.example.waffle_camera_plugin_example
+package com.example.pretty_awesome_camera_example
 
 import io.flutter.embedding.android.FlutterActivity
 

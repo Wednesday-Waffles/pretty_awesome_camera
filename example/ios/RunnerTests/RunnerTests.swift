@@ -3,7 +3,7 @@ import UIKit
 import XCTest
 
 
-@testable import waffle_camera_plugin
+@testable import pretty_awesome_camera
 
 // This demonstrates a simple unit test of the Swift portion of this plugin's implementation.
 //
@@ -12,7 +12,7 @@ import XCTest
 class RunnerTests: XCTestCase {
 
   func testGetPlatformVersion() {
-    let plugin = WaffleCameraPlugin()
+    let plugin = PrettyAwesomeCameraPlugin()
 
     let call = FlutterMethodCall(methodName: "getPlatformVersion", arguments: [])
 

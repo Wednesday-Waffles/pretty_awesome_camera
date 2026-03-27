@@ -1,4 +1,4 @@
-group = "com.example.waffle_camera_plugin"
+group = "com.example.pretty_awesome_camera"
 version = "1.0-SNAPSHOT"
 
 buildscript {
@@ -27,7 +27,7 @@ plugins {
 }
 
 android {
-    namespace = "com.example.waffle_camera_plugin"
+    namespace = "com.example.pretty_awesome_camera"
 
     compileSdk = 36
 

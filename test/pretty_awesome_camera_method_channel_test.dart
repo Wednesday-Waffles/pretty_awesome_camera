@@ -1,17 +1,17 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_method_channel.dart';
-import 'package:waffle_camera_plugin/src/camera_config.dart';
-import 'package:waffle_camera_plugin/src/camera_description.dart';
-import 'package:waffle_camera_plugin/src/camera_exception.dart';
-import 'package:waffle_camera_plugin/src/recording_state.dart';
-import 'package:waffle_camera_plugin/src/resolution_preset.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_method_channel.dart';
+import 'package:pretty_awesome_camera/src/camera_config.dart';
+import 'package:pretty_awesome_camera/src/camera_description.dart';
+import 'package:pretty_awesome_camera/src/camera_exception.dart';
+import 'package:pretty_awesome_camera/src/recording_state.dart';
+import 'package:pretty_awesome_camera/src/resolution_preset.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  MethodChannelWaffleCameraPlugin platform = MethodChannelWaffleCameraPlugin();
-  const MethodChannel channel = MethodChannel('waffle_camera_plugin');
+  MethodChannelPrettyAwesomeCamera platform = MethodChannelPrettyAwesomeCamera();
+  const MethodChannel channel = MethodChannel('pretty_awesome_camera');
 
   setUp(() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -372,7 +372,7 @@ void main() {
   group('onRecordingStateChanged', () {
     test('returns stream of RecordingState', () async {
       const EventChannel eventChannel = EventChannel(
-        'waffle_camera_plugin/recording_state_0',
+        'pretty_awesome_camera/recording_state_0',
       );
 
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

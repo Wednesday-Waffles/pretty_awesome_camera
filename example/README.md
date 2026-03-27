@@ -1,6 +1,6 @@
-# waffle_camera_plugin_example
+# pretty_awesome_camera_example
 
-Demonstrates how to use the waffle_camera_plugin plugin.
+Demonstrates how to use the pretty_awesome_camera plugin.
 
 ## Getting Started
 

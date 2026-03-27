@@ -1,4 +1,4 @@
-package com.example.waffle_camera_plugin
+package com.example.pretty_awesome_camera
 
 import android.app.Activity
 import android.content.Context
@@ -45,7 +45,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.nio.ByteBuffer
 
-class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
+class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private lateinit var channel: MethodChannel
     private var activity: Activity? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
@@ -74,7 +74,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     )
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
-        channel = MethodChannel(binding.binaryMessenger, "waffle_camera_plugin")
+        channel = MethodChannel(binding.binaryMessenger, "pretty_awesome_camera")
         channel.setMethodCallHandler(this)
         flutterPluginBinding = binding
     }
@@ -210,7 +210,7 @@ class WaffleCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 flutterPluginBinding?.let { pluginBinding ->
                     val stateChannel = EventChannel(
                         pluginBinding.binaryMessenger,
-                        "waffle_camera_plugin/recording_state_${actualCameraId}"
+                        "pretty_awesome_camera/recording_state_${actualCameraId}"
                     )
                     val streamHandler = RecordingStateStreamHandler()
                     stateChannel.setStreamHandler(streamHandler)

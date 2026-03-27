@@ -3,14 +3,14 @@ import UIKit
 import AVFoundation
 import os.lock
 
-public class WaffleCameraPlugin: NSObject, FlutterPlugin {
+public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     private var cameras: [Int: CameraInstance] = [:]
     private var nextCameraId = 0
     private var textureRegistry: FlutterTextureRegistry?
     private var eventChannels: [Int: FlutterEventChannel] = [:]
     private var streamHandlers: [Int: RecordingStateStreamHandler] = [:]
     private var registrar: FlutterPluginRegistrar?
-    private let sessionQueue = DispatchQueue(label: "com.waffle.camera.session")
+    private let sessionQueue = DispatchQueue(label: "com.prettyawesome.camera.session")
     private var stateLock = os_unfair_lock()
     
     class CameraInstance {
@@ -128,8 +128,8 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     }
     
     public static func register(with registrar: FlutterPluginRegistrar) {
-        let channel = FlutterMethodChannel(name: "waffle_camera_plugin", binaryMessenger: registrar.messenger())
-        let instance = WaffleCameraPlugin()
+        let channel = FlutterMethodChannel(name: "pretty_awesome_camera", binaryMessenger: registrar.messenger())
+        let instance = PrettyAwesomeCameraPlugin()
         instance.textureRegistry = registrar.textures()
         instance.registrar = registrar
         registrar.addMethodCallDelegate(instance, channel: channel)
@@ -254,7 +254,7 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             }
             
             let audioDataOutput = AVCaptureAudioDataOutput()
-            let audioQueue = DispatchQueue(label: "com.waffle.camera.audio")
+            let audioQueue = DispatchQueue(label: "com.prettyawesome.camera.audio")
             audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
             if captureSession.canAddOutput(audioDataOutput) {
                 captureSession.addOutput(audioDataOutput)
@@ -291,7 +291,7 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
             
             if let registrar = registrar {
                 let stateChannel = FlutterEventChannel(
-                    name: "waffle_camera_plugin/recording_state_\(cameraId)",
+                    name: "pretty_awesome_camera/recording_state_\(cameraId)",
                     binaryMessenger: registrar.messenger()
                 )
                 let streamHandler = RecordingStateStreamHandler()
@@ -839,7 +839,7 @@ public class WaffleCameraPlugin: NSObject, FlutterPlugin {
     }
 }
 
-extension WaffleCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
+extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate {
     public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard output is AVCaptureAudioDataOutput else { return }
         os_unfair_lock_lock(&stateLock)

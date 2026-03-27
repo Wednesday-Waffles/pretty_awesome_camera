@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waffle_camera_plugin/src/camera_exception.dart';
+import 'package:pretty_awesome_camera/src/camera_exception.dart';
 
 void main() {
   group('CameraException', () {

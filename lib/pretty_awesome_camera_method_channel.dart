@@ -6,13 +6,13 @@ import 'src/camera_description.dart';
 import 'src/camera_exception.dart';
 import 'src/recording_state.dart';
 import 'src/switching_capability.dart';
-import 'waffle_camera_plugin_platform_interface.dart';
+import 'pretty_awesome_camera_platform_interface.dart';
 
-/// An implementation of [WaffleCameraPluginPlatform] that uses method channels.
-class MethodChannelWaffleCameraPlugin extends WaffleCameraPluginPlatform {
+/// An implementation of [PrettyAwesomeCameraPlatform] that uses method channels.
+class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   /// The method channel used to interact with the native platform.
   @visibleForTesting
-  final methodChannel = const MethodChannel('waffle_camera_plugin');
+  final methodChannel = const MethodChannel('pretty_awesome_camera');
 
   /// Event channel for recording state changes.
   late EventChannel _recordingStateEventChannel;
@@ -177,7 +177,7 @@ class MethodChannelWaffleCameraPlugin extends WaffleCameraPluginPlatform {
   @override
   Stream<RecordingState> onRecordingStateChanged(int cameraId) {
     _recordingStateEventChannel = EventChannel(
-      'waffle_camera_plugin/recording_state_$cameraId',
+      'pretty_awesome_camera/recording_state_$cameraId',
     );
     return _recordingStateEventChannel
         .receiveBroadcastStream()

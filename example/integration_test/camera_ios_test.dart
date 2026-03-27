@@ -1,17 +1,17 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_platform_interface.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
   group('iOS Camera Integration Tests', () {
-    late WaffleCameraPluginPlatform platform;
+    late PrettyAwesomeCameraPlatform platform;
 
     setUp(() {
-      platform = WaffleCameraPluginPlatform.instance;
+      platform = PrettyAwesomeCameraPlatform.instance;
     });
 
     test('getAvailableCameras returns camera list', () async {

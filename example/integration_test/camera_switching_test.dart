@@ -1,13 +1,13 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_platform_interface.dart';
 
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  final platform = WaffleCameraPluginPlatform.instance;
+  final platform = PrettyAwesomeCameraPlatform.instance;
 
   group('Camera Switching API Tests', () {
     testWidgets('canSwitchCamera returns false when not recording', (

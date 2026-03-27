@@ -9,7 +9,7 @@ PODS:
     - Flutter
   - permission_handler_apple (9.3.0):
     - Flutter
-  - waffle_camera_plugin (0.0.1):
+  - pretty_awesome_camera (0.0.1):
     - Flutter
 
 DEPENDENCIES:
@@ -18,7 +18,7 @@ DEPENDENCIES:
   - gal (from `.symlinks/plugins/gal/darwin`)
   - integration_test (from `.symlinks/plugins/integration_test/ios`)
   - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
-  - waffle_camera_plugin (from `.symlinks/plugins/waffle_camera_plugin/ios`)
+  - pretty_awesome_camera (from `.symlinks/plugins/pretty_awesome_camera/ios`)
 
 EXTERNAL SOURCES:
   device_info_plus:
@@ -31,8 +31,8 @@ EXTERNAL SOURCES:
     :path: ".symlinks/plugins/integration_test/ios"
   permission_handler_apple:
     :path: ".symlinks/plugins/permission_handler_apple/ios"
-  waffle_camera_plugin:
-    :path: ".symlinks/plugins/waffle_camera_plugin/ios"
+  pretty_awesome_camera:
+    :path: ".symlinks/plugins/pretty_awesome_camera/ios"
 
 SPEC CHECKSUMS:
   device_info_plus: 21fcca2080fbcd348be798aa36c3e5ed849eefbe
@@ -40,7 +40,7 @@ SPEC CHECKSUMS:
   gal: baecd024ebfd13c441269ca7404792a7152fde89
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
-  waffle_camera_plugin: d697bffbaf2928972c8704005297147917c84390
+  pretty_awesome_camera: 9ddd45479cfb2caff59a0370409576b2d9807203
 
 PODFILE CHECKSUM: f8eacd1596118ed04e2657d8f3dee484f7e1e9da
 

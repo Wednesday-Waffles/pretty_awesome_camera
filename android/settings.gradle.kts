@@ -1,1 +1,1 @@
-rootProject.name = 'waffle_camera_plugin'
+rootProject.name = 'pretty_awesome_camera'

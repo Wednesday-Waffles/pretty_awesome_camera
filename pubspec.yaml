@@ -1,11 +1,11 @@
-name: waffle_camera_plugin
-description: "A new Flutter plugin project."
+name: pretty_awesome_camera
+description: "A Pretty Awesome Camera plugin for Flutter."
 version: 0.0.1
 homepage:
 
 environment:
   sdk: ^3.11.1
-  flutter: '>=3.3.0'
+  flutter: ">=3.3.0"
 
 dependencies:
   flutter:
@@ -32,13 +32,13 @@ flutter:
   # This is required for using `dart:ffi`.
   # All these are used by the tooling to maintain consistency when
   # adding or updating assets for this project.
-   plugin:
-     platforms:
-       android:
-         package: com.example.waffle_camera_plugin
-         pluginClass: WaffleCameraPlugin
-       ios:
-         pluginClass: WaffleCameraPlugin
+  plugin:
+    platforms:
+      android:
+        package: com.example.pretty_awesome_camera
+        pluginClass: PrettyAwesomeCameraPlugin
+      ios:
+        pluginClass: PrettyAwesomeCameraPlugin
 
   # To add assets to your plugin package, add an assets section, like this:
   # assets:

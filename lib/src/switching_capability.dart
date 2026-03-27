@@ -14,7 +14,7 @@ import 'switching_path.dart';
 /// strategy throughout the recording session.
 class SwitchingCapability {
   static const MethodChannel _methodChannel = MethodChannel(
-    'waffle_camera_plugin',
+    'pretty_awesome_camera',
   );
 
   /// The detected switching path for the current platform and device.
@@ -76,20 +76,20 @@ class SwitchingCapability {
 
       developer.log(
         'iOS switching path selected: $path (MultiCam supported: $supported)',
-        name: 'waffle_camera.switching',
+        name: 'pretty_awesome_camera.switching',
       );
 
       return path;
     } on PlatformException catch (e) {
       developer.log(
         'iOS MultiCam detection failed: ${e.code} - ${e.message}',
-        name: 'waffle_camera.switching',
+        name: 'pretty_awesome_camera.switching',
       );
 
       // Fall back to fallback path if detection fails
       developer.log(
         'Falling back to segment merge path due to detection failure',
-        name: 'waffle_camera.switching',
+        name: 'pretty_awesome_camera.switching',
       );
 
       return SwitchingPath.fallbackSegmentMerge;
@@ -105,7 +105,7 @@ class SwitchingCapability {
     // v4.1: Always use fallback path on Android
     developer.log(
       'Android switching path selected: androidFallbackSegmentMerge (v4.1 constraint)',
-      name: 'waffle_camera.switching',
+      name: 'pretty_awesome_camera.switching',
     );
 
     return SwitchingPath.androidFallbackSegmentMerge;

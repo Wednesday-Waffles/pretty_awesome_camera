@@ -1,12 +1,12 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_method_channel.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_method_channel.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_platform_interface.dart';
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
-class MockWaffleCameraPluginPlatform
+class MockPrettyAwesomeCameraPlatform
     with MockPlatformInterfaceMixin
-    implements WaffleCameraPluginPlatform {
+    implements PrettyAwesomeCameraPlatform {
   @override
   Future<String?> getPlatformVersion() => Future.value('42');
 
@@ -81,7 +81,7 @@ class MockWaffleCameraPluginPlatform
   }
 }
 
-class ConcreteWaffleCameraPluginPlatform extends WaffleCameraPluginPlatform {
+class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   @override
   Future<List<CameraDescription>> getAvailableCameras() {
     throw UnimplementedError();
@@ -154,18 +154,18 @@ class ConcreteWaffleCameraPluginPlatform extends WaffleCameraPluginPlatform {
 }
 
 void main() {
-  final WaffleCameraPluginPlatform initialPlatform =
-      WaffleCameraPluginPlatform.instance;
+  final PrettyAwesomeCameraPlatform initialPlatform =
+      PrettyAwesomeCameraPlatform.instance;
 
-  test('$MethodChannelWaffleCameraPlugin is the default instance', () {
-    expect(initialPlatform, isInstanceOf<MethodChannelWaffleCameraPlugin>());
+  test('$MethodChannelPrettyAwesomeCamera is the default instance', () {
+    expect(initialPlatform, isInstanceOf<MethodChannelPrettyAwesomeCamera>());
   });
 
   group('Platform interface methods throw UnimplementedError by default', () {
-    late WaffleCameraPluginPlatform platform;
+    late PrettyAwesomeCameraPlatform platform;
 
     setUp(() {
-      platform = ConcreteWaffleCameraPluginPlatform();
+      platform = ConcretePrettyAwesomeCameraPlatform();
     });
 
     test('getAvailableCameras throws UnimplementedError', () {

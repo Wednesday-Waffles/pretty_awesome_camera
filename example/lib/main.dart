@@ -8,7 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:gal/gal.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();

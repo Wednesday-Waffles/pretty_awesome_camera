@@ -4,26 +4,26 @@ import 'src/camera_config.dart';
 import 'src/camera_description.dart';
 import 'src/recording_state.dart';
 import 'src/switching_path.dart';
-import 'waffle_camera_plugin_method_channel.dart';
+import 'pretty_awesome_camera_method_channel.dart';
 
-abstract class WaffleCameraPluginPlatform extends PlatformInterface {
-  /// Constructs a WaffleCameraPluginPlatform.
-  WaffleCameraPluginPlatform() : super(token: _token);
+abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
+  /// Constructs a PrettyAwesomeCameraPlatform.
+  PrettyAwesomeCameraPlatform() : super(token: _token);
 
   static final Object _token = Object();
 
-  static WaffleCameraPluginPlatform _instance =
-      MethodChannelWaffleCameraPlugin();
+  static PrettyAwesomeCameraPlatform _instance =
+      MethodChannelPrettyAwesomeCamera();
 
-  /// The default instance of [WaffleCameraPluginPlatform] to use.
+  /// The default instance of [PrettyAwesomeCameraPlatform] to use.
   ///
-  /// Defaults to [MethodChannelWaffleCameraPlugin].
-  static WaffleCameraPluginPlatform get instance => _instance;
+  /// Defaults to [MethodChannelPrettyAwesomeCamera].
+  static PrettyAwesomeCameraPlatform get instance => _instance;
 
   /// Platform-specific implementations should set this with their own
-  /// platform-specific class that extends [WaffleCameraPluginPlatform] when
+  /// platform-specific class that extends [PrettyAwesomeCameraPlatform] when
   /// they register themselves.
-  static set instance(WaffleCameraPluginPlatform instance) {
+  static set instance(PrettyAwesomeCameraPlatform instance) {
     PlatformInterface.verifyToken(instance, _token);
     _instance = instance;
   }

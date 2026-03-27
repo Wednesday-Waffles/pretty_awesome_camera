@@ -8,14 +8,14 @@ import 'src/camera_exception.dart';
 import 'src/camera_snapshot.dart';
 import 'src/camera_state.dart';
 import 'src/recording_state.dart';
-import 'waffle_camera_plugin_platform_interface.dart';
+import 'pretty_awesome_camera_platform_interface.dart';
 
 /// High-level controller that owns camera lifecycle and recording transitions.
 class CameraController extends ValueNotifier<CameraState> {
-  static WaffleCameraPluginPlatform? _cachedCameraPlatform;
+  static PrettyAwesomeCameraPlatform? _cachedCameraPlatform;
   static List<CameraDescription>? _cachedAvailableCameras;
 
-  final WaffleCameraPluginPlatform _platform;
+  final PrettyAwesomeCameraPlatform _platform;
   final LensDirection _preferredLens;
   List<CameraDescription> _availableCameras;
   CameraSnapshot _cameraSnapshot;
@@ -29,8 +29,8 @@ class CameraController extends ValueNotifier<CameraState> {
     LensDirection preferredLens = LensDirection.front,
     CameraConfig config = const CameraConfig(),
     List<CameraDescription> availableCameras = const [],
-    WaffleCameraPluginPlatform? platform,
-  }) : _platform = platform ?? WaffleCameraPluginPlatform.instance,
+    PrettyAwesomeCameraPlatform? platform,
+  }) : _platform = platform ?? PrettyAwesomeCameraPlatform.instance,
        _preferredLens = preferredLens,
        _availableCameras = List<CameraDescription>.unmodifiable(
          availableCameras,
@@ -53,9 +53,9 @@ class CameraController extends ValueNotifier<CameraState> {
   static Future<CameraController> create({
     LensDirection? preferredLens,
     CameraConfig config = const CameraConfig(),
-    WaffleCameraPluginPlatform? platform,
+    PrettyAwesomeCameraPlatform? platform,
   }) async {
-    final resolvedPlatform = platform ?? WaffleCameraPluginPlatform.instance;
+    final resolvedPlatform = platform ?? PrettyAwesomeCameraPlatform.instance;
     final resolvedPreferredLens = preferredLens ?? config.lensDirection;
     final availableCameras = await preloadAvailableCameras(
       platform: resolvedPlatform,
@@ -74,10 +74,10 @@ class CameraController extends ValueNotifier<CameraState> {
   }
 
   static Future<List<CameraDescription>> preloadAvailableCameras({
-    WaffleCameraPluginPlatform? platform,
+    PrettyAwesomeCameraPlatform? platform,
     bool forceRefresh = false,
   }) async {
-    final resolvedPlatform = platform ?? WaffleCameraPluginPlatform.instance;
+    final resolvedPlatform = platform ?? PrettyAwesomeCameraPlatform.instance;
 
     if (!forceRefresh &&
         identical(_cachedCameraPlatform, resolvedPlatform) &&
@@ -94,9 +94,9 @@ class CameraController extends ValueNotifier<CameraState> {
   }
 
   static List<CameraDescription>? getCachedAvailableCameras({
-    WaffleCameraPluginPlatform? platform,
+    PrettyAwesomeCameraPlatform? platform,
   }) {
-    final resolvedPlatform = platform ?? WaffleCameraPluginPlatform.instance;
+    final resolvedPlatform = platform ?? PrettyAwesomeCameraPlatform.instance;
     if (!identical(_cachedCameraPlatform, resolvedPlatform)) {
       return null;
     }
@@ -108,9 +108,9 @@ class CameraController extends ValueNotifier<CameraState> {
   }
 
   static void clearAvailableCamerasCache({
-    WaffleCameraPluginPlatform? platform,
+    PrettyAwesomeCameraPlatform? platform,
   }) {
-    final resolvedPlatform = platform ?? WaffleCameraPluginPlatform.instance;
+    final resolvedPlatform = platform ?? PrettyAwesomeCameraPlatform.instance;
     if (identical(_cachedCameraPlatform, resolvedPlatform)) {
       _cachedCameraPlatform = null;
       _cachedAvailableCameras = null;

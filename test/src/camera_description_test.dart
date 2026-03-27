@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waffle_camera_plugin/src/camera_description.dart';
+import 'package:pretty_awesome_camera/src/camera_description.dart';
 
 void main() {
   group('CameraDescription', () {

@@ -1,16 +1,16 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:waffle_camera_plugin/camera_controller.dart';
-import 'package:waffle_camera_plugin/src/camera_config.dart';
-import 'package:waffle_camera_plugin/src/camera_description.dart';
-import 'package:waffle_camera_plugin/src/camera_exception.dart';
-import 'package:waffle_camera_plugin/src/camera_state.dart';
-import 'package:waffle_camera_plugin/src/recording_state.dart';
-import 'package:waffle_camera_plugin/src/resolution_preset.dart';
-import 'package:waffle_camera_plugin/waffle_camera_plugin_platform_interface.dart';
+import 'package:pretty_awesome_camera/camera_controller.dart';
+import 'package:pretty_awesome_camera/src/camera_config.dart';
+import 'package:pretty_awesome_camera/src/camera_description.dart';
+import 'package:pretty_awesome_camera/src/camera_exception.dart';
+import 'package:pretty_awesome_camera/src/camera_state.dart';
+import 'package:pretty_awesome_camera/src/recording_state.dart';
+import 'package:pretty_awesome_camera/src/resolution_preset.dart';
+import 'package:pretty_awesome_camera/pretty_awesome_camera_platform_interface.dart';
 
-class FakeCameraPlatform extends WaffleCameraPluginPlatform {
+class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   final StreamController<RecordingState> recordingStateController =
       StreamController<RecordingState>.broadcast();
   List<CameraDescription> availableCameras = [];
