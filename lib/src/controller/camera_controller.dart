@@ -24,6 +24,7 @@ class CameraController extends ValueNotifier<CameraState> {
   StreamSubscription<RecordingState>? _recordingStateSubscription;
   bool _isControllerDisposed = false;
   Future<void>? _initializationFuture;
+  Future<String>? _stopRecordingFuture;
 
   CameraController({
     CameraDescription? description,
@@ -293,6 +294,14 @@ class CameraController extends ValueNotifier<CameraState> {
 
   Future<String> stopRecording() async {
     _assertInitialized('stopRecording');
+
+    // If already stopping, return the in-flight future to deduplicate
+    // concurrent calls (e.g. double-tap on the stop button).
+    final inFlight = _stopRecordingFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
     _assertState(
       allows: (state) =>
           state is CameraRecordingState ||
@@ -306,6 +315,16 @@ class CameraController extends ValueNotifier<CameraState> {
       _cameraSnapshot.copyWith(state: _cameraStoppingRecordingState()),
     );
 
+    final future = _stopRecordingInternal(previous);
+    _stopRecordingFuture = future;
+    return future.whenComplete(() {
+      if (identical(_stopRecordingFuture, future)) {
+        _stopRecordingFuture = null;
+      }
+    });
+  }
+
+  Future<String> _stopRecordingInternal(CameraSnapshot previous) async {
     try {
       final filePath = await _platform.stopRecording(cameraId!);
       _setValueSafely(
@@ -490,7 +509,8 @@ class CameraController extends ValueNotifier<CameraState> {
         if (_cameraSnapshot.state is! CameraInitializingState &&
             _cameraSnapshot.state is! CameraDisposedState &&
             _cameraSnapshot.state is! CameraReadyState &&
-            _cameraSnapshot.state is! CameraVideoRecordedState) {
+            _cameraSnapshot.state is! CameraVideoRecordedState &&
+            _cameraSnapshot.state is! CameraStoppingRecordingState) {
           _setValueSafely(_cameraSnapshot.copyWith(state: _cameraReadyState()));
         }
         return;
@@ -515,7 +535,17 @@ class CameraController extends ValueNotifier<CameraState> {
       return;
     }
     _cameraSnapshot = nextValue;
-    super.value = nextValue.state;
+    // Wrap notifyListeners to prevent listener errors from propagating
+    // back into controller state transitions. A misbehaving listener
+    // (e.g. calling setState after dispose) should not break the
+    // controller's internal state machine.
+    try {
+      super.value = nextValue.state;
+    } catch (_) {
+      // Listener errors are intentionally swallowed here. The controller
+      // has already updated its internal snapshot; the notification
+      // failure is a UI-layer concern, not a camera lifecycle issue.
+    }
   }
 
   void _assertInitialized(String method) {
