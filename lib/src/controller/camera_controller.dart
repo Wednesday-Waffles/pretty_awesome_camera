@@ -247,16 +247,19 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<void> switchCamera() async {
     _assertNotDisposed('switchCamera');
 
-    if (value is CameraPausedState) {
-      throw CameraException(
-        code: 'invalid_state',
-        message: 'Cannot switch cameras while recording is paused.',
-      );
-    }
-
     final nextDescription = await _resolveNextCameraDescription();
 
     if (value is CameraRecordingState) {
+      await _switchCameraDuringRecording(nextDescription);
+      return;
+    }
+
+    if (value is CameraPausedState) {
+      await _switchCameraDuringPaused(nextDescription);
+      return;
+    }
+
+    if (value is CameraReadyState || value is CameraVideoRecordedState) {
       final previous = _cameraSnapshot;
       _setValueSafely(
         _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
@@ -266,7 +269,7 @@ class CameraController extends ValueNotifier<CameraState> {
         final switchResult = await _platform.switchCamera(cameraId!);
         _setValueSafely(
           _cameraSnapshot.copyWith(
-            state: _cameraRecordingState(description: nextDescription),
+            state: _cameraReadyState(description: nextDescription),
             textureId: switchResult.textureId,
             previewSize: switchResult.previewSize,
           ),
@@ -290,6 +293,56 @@ class CameraController extends ValueNotifier<CameraState> {
     }
 
     await reconfigure(description: nextDescription);
+  }
+
+  Future<void> _switchCameraDuringRecording(
+    CameraDescription nextDescription,
+  ) async {
+    final previous = _cameraSnapshot;
+    _setValueSafely(
+      _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
+    );
+
+    try {
+      final switchResult = await _platform.switchCamera(cameraId!);
+      _setValueSafely(
+        _cameraSnapshot.copyWith(
+          state: _cameraRecordingState(description: nextDescription),
+          textureId: switchResult.textureId,
+          previewSize: switchResult.previewSize,
+        ),
+      );
+    } on CameraException catch (error) {
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
+      rethrow;
+    }
+  }
+
+  Future<void> _switchCameraDuringPaused(
+    CameraDescription nextDescription,
+  ) async {
+    final previous = _cameraSnapshot;
+    _setValueSafely(
+      _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
+    );
+
+    try {
+      final switchResult = await _platform.switchCamera(cameraId!);
+      _setValueSafely(
+        _cameraSnapshot.copyWith(
+          state: _cameraPausedState(description: nextDescription),
+          textureId: switchResult.textureId,
+          previewSize: switchResult.previewSize,
+        ),
+      );
+    } on CameraException catch (error) {
+      _setValueSafely(
+        previous.copyWith(state: _stateWithError(previous.state, error)),
+      );
+      rethrow;
+    }
   }
 
   Future<String> stopRecording() async {
@@ -616,11 +669,12 @@ class CameraController extends ValueNotifier<CameraState> {
         hasMultipleCameras: hasMultipleCameras,
       );
 
-  CameraState _cameraPausedState() => CameraPausedState(
-    config: config,
-    description: _cameraSnapshot.description!,
-    hasMultipleCameras: hasMultipleCameras,
-  );
+  CameraState _cameraPausedState({CameraDescription? description}) =>
+      CameraPausedState(
+        config: config,
+        description: description ?? _cameraSnapshot.description!,
+        hasMultipleCameras: hasMultipleCameras,
+      );
 
   CameraState _cameraSwitchingState() => CameraSwitchingState(
     config: config,
