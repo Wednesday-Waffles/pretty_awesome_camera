@@ -40,7 +40,7 @@ SPEC CHECKSUMS:
   gal: baecd024ebfd13c441269ca7404792a7152fde89
   integration_test: 4a889634ef21a45d28d50d622cf412dc6d9f586e
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
-  pretty_awesome_camera: 9ddd45479cfb2caff59a0370409576b2d9807203
+  pretty_awesome_camera: c56564e43c1c14a0f1d4117baca25a4418ea5f4d
 
 PODFILE CHECKSUM: f8eacd1596118ed04e2657d8f3dee484f7e1e9da
 

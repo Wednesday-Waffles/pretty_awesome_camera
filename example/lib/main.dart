@@ -103,7 +103,7 @@ class _CameraLaunchScreenState extends State<CameraLaunchScreen> {
     try {
       controller = await CameraController.create(
         preferredLens: LensDirection.front,
-        config: const CameraConfig(resolutionPreset: ResolutionPreset.high),
+        config: const CameraConfig(resolutionPreset: ResolutionPreset.medium),
       );
       final prewarmFuture = controller.prewarmUp();
 
@@ -259,6 +259,10 @@ class _CameraScreenState extends State<CameraScreen> {
   String? _message;
   Future<String>? _switchingPathFuture;
 
+  // Recording timer
+  final Stopwatch _recordingStopwatch = Stopwatch();
+  Timer? _timerUpdateTicker;
+
   @override
   void initState() {
     super.initState();
@@ -275,6 +279,7 @@ class _CameraScreenState extends State<CameraScreen> {
 
   @override
   void dispose() {
+    _timerUpdateTicker?.cancel();
     _controller.removeListener(_handleControllerChanged);
     unawaited(_controller.disposeCamera());
     _controller.dispose();
@@ -290,7 +295,44 @@ class _CameraScreenState extends State<CameraScreen> {
     if (error != null && error.message != _message) {
       _showMessage(error.message);
     }
+
+    // Manage recording timer based on state
+    final value = _controller.value;
+    if (value is CameraRecordingState) {
+      _startRecordingTimer();
+    } else if (value is CameraPausedState) {
+      _pauseRecordingTimer();
+    } else if (value is CameraReadyState ||
+        value is CameraVideoRecordedState ||
+        value is CameraStoppingRecordingState) {
+      _stopRecordingTimer();
+    }
+
     setState(() {});
+  }
+
+  void _startRecordingTimer() {
+    if (!_recordingStopwatch.isRunning) {
+      _recordingStopwatch.start();
+      _timerUpdateTicker?.cancel();
+      _timerUpdateTicker = Timer.periodic(
+        const Duration(milliseconds: 100),
+        (_) => setState(() {}),
+      );
+    }
+  }
+
+  void _pauseRecordingTimer() {
+    if (_recordingStopwatch.isRunning) {
+      _recordingStopwatch.stop();
+      _timerUpdateTicker?.cancel();
+    }
+  }
+
+  void _stopRecordingTimer() {
+    _recordingStopwatch.stop();
+    _recordingStopwatch.reset();
+    _timerUpdateTicker?.cancel();
   }
 
   void _showMessage(String message) {
@@ -441,6 +483,15 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ],
                   ),
+                  // Recording timer
+                  if (value is CameraRecordingState ||
+                      value is CameraPausedState) ...[
+                    const SizedBox(height: 16),
+                    _RecordingTimerDisplay(
+                      stopwatch: _recordingStopwatch,
+                      isPaused: value is CameraPausedState,
+                    ),
+                  ],
                   if (_message != null) ...[
                     const SizedBox(height: 12),
                     _InfoCard(title: 'Message', body: _message!),
@@ -905,6 +956,94 @@ class _GlassIconButton extends StatelessWidget {
               border: Border.all(color: Colors.white.withOpacity(0.1)),
             ),
             child: Icon(icon, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RecordingTimerDisplay extends StatelessWidget {
+  const _RecordingTimerDisplay({
+    required this.stopwatch,
+    required this.isPaused,
+  });
+
+  final Stopwatch stopwatch;
+  final bool isPaused;
+
+  String _formatDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    final seconds = duration.inSeconds.remainder(60);
+    final centiseconds = (duration.inMilliseconds.remainder(1000) / 10).floor();
+
+    if (hours > 0) {
+      return '${hours.toString().padLeft(2, '0')}:'
+          '${minutes.toString().padLeft(2, '0')}:'
+          '${seconds.toString().padLeft(2, '0')}';
+    }
+    return '${minutes.toString().padLeft(2, '0')}:'
+        '${seconds.toString().padLeft(2, '0')}.'
+        '${centiseconds.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final elapsed = stopwatch.elapsed;
+    final formattedTime = _formatDuration(elapsed);
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+          decoration: BoxDecoration(
+            color: isPaused
+                ? Colors.amber.withOpacity(0.2)
+                : const Color(0xFFFF5533).withOpacity(0.2),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(
+              color: isPaused
+                  ? Colors.amber.withOpacity(0.4)
+                  : const Color(0xFFFF5533).withOpacity(0.4),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(
+                  color: isPaused ? Colors.amber : const Color(0xFFFF5533),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Text(
+                formattedTime,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w600,
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
+              ),
+              if (isPaused) ...[
+                const SizedBox(width: 10),
+                Text(
+                  'PAUSED',
+                  style: TextStyle(
+                    color: Colors.amber.shade300,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+              ],
+            ],
           ),
         ),
       ),
