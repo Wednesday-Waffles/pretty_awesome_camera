@@ -469,6 +469,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         cameraInstance.captureSession?.stopRunning()
         if let textureId = cameraInstance.textureId {
             textureRegistry?.unregisterTexture(textureId)
+            cameraInstance.previewTexture?.textureRegistry = nil
         }
         
         if let eventChannel = eventChannels[cameraId] {
@@ -932,7 +933,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             if assetWriter.status == .unknown {
                 assetWriter.startWriting()
                 if assetWriter.status == .failed {
-                    print("Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? "unknown error")")
+                    print("Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? \"unknown error\")")
                 }
                 assetWriter.startSession(atSourceTime: currentTime)
                 cameraInstance.sessionStartTime = currentTime
@@ -1227,7 +1228,10 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
             os_unfair_lock_lock(&stateLock)
             latestPixelBuffer = pixelBuffer
             os_unfair_lock_unlock(&stateLock)
-            textureRegistry?.textureFrameAvailable(textureId)
+            let tid = textureId
+            DispatchQueue.main.async { [weak self] in
+                self?.textureRegistry?.textureFrameAvailable(tid)
+            }
         }
         
         onSampleBuffer?(sampleBuffer)
@@ -1248,7 +1252,10 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
         latestPixelBuffer = nil
         framesToDropAfterSwitch = Self.switchStabilizationFrameCount
         os_unfair_lock_unlock(&stateLock)
-        textureRegistry?.textureFrameAvailable(textureId)
+        let tid = textureId
+        DispatchQueue.main.async { [weak self] in
+            self?.textureRegistry?.textureFrameAvailable(tid)
+        }
     }
 
     func beginPostSwitchStabilization() {
