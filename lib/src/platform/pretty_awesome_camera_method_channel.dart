@@ -117,18 +117,12 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<String> stopRecording(int cameraId) async {
+  Future<String?> stopRecording(int cameraId) async {
     try {
       final filePath = await methodChannel.invokeMethod<String>(
         'stopRecording',
         {'cameraId': cameraId},
       );
-      if (filePath == null) {
-        throw CameraException(
-          code: 'invalid_response',
-          message: 'Platform returned null file path',
-        );
-      }
       return filePath;
     } on PlatformException catch (e) {
       throw CameraException(

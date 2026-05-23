@@ -32,21 +32,19 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var recordingLock = os_unfair_lock()
         fileprivate var _isRecording: Bool = false
         fileprivate var _isPaused: Bool = false
-        fileprivate var _videoIsDisconnected: Bool = false
-        fileprivate var _audioIsDisconnected: Bool = false
         fileprivate var _recordingWarmupFramesRemaining: Int = 0
         fileprivate var _hasPrewarmedRecordingPipeline: Bool = false
-        fileprivate var _videoTimeOffset: CMTime = .zero
-        fileprivate var _audioTimeOffset: CMTime = .zero
-        fileprivate var _lastVideoSampleTime: CMTime = .zero
-        fileprivate var _lastAudioSampleTime: CMTime = .zero
+        fileprivate var _timeOffset: CMTime = .zero
+        fileprivate var _lastSampleTime: CMTime = .zero
         fileprivate var _isFirstVideoFrame: Bool = true
         fileprivate var _isFirstAudioFrame: Bool = true
         fileprivate var _sessionStartTime: CMTime = .zero
+        fileprivate var _discontinuityPending: Bool = false
         var activeFrameRateMin: CMTime?
         var activeFrameRateMax: CMTime?
         var isUsingBluetoothInput: Bool = false
         var actualAudioSampleRate: Double = 44100
+        var recordingAudioSampleRate: Double = 0
         
         init(cameraId: Int) {
             self.cameraId = cameraId
@@ -78,28 +76,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
         }
         
-        var videoIsDisconnected: Bool {
+        var discontinuityPending: Bool {
             get {
                 os_unfair_lock_lock(&recordingLock)
                 defer { os_unfair_lock_unlock(&recordingLock) }
-                return _videoIsDisconnected
+                return _discontinuityPending
             }
             set {
                 os_unfair_lock_lock(&recordingLock)
-                _videoIsDisconnected = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-        
-        var audioIsDisconnected: Bool {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _audioIsDisconnected
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _audioIsDisconnected = newValue
+                _discontinuityPending = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
@@ -130,54 +115,28 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
         }
 
-        var videoTimeOffset: CMTime {
+        var timeOffset: CMTime {
             get {
                 os_unfair_lock_lock(&recordingLock)
                 defer { os_unfair_lock_unlock(&recordingLock) }
-                return _videoTimeOffset
+                return _timeOffset
             }
             set {
                 os_unfair_lock_lock(&recordingLock)
-                _videoTimeOffset = newValue
+                _timeOffset = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
 
-        var audioTimeOffset: CMTime {
+        var lastSampleTime: CMTime {
             get {
                 os_unfair_lock_lock(&recordingLock)
                 defer { os_unfair_lock_unlock(&recordingLock) }
-                return _audioTimeOffset
+                return _lastSampleTime
             }
             set {
                 os_unfair_lock_lock(&recordingLock)
-                _audioTimeOffset = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
-        var lastVideoSampleTime: CMTime {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _lastVideoSampleTime
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _lastVideoSampleTime = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
-        var lastAudioSampleTime: CMTime {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _lastAudioSampleTime
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _lastAudioSampleTime = newValue
+                _lastSampleTime = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
@@ -509,13 +468,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         os_unfair_lock_unlock(&stateLock)
         
         switch reason {
-        case .oldDeviceUnavailable:
+        case .oldDeviceUnavailable, .newDeviceAvailable:
             for cameraInstance in activeCameras where cameraInstance.isRecording {
-                cameraInstance.audioIsDisconnected = true
-            }
-        case .newDeviceAvailable:
-            for cameraInstance in activeCameras where cameraInstance.isRecording {
-                cameraInstance.audioIsDisconnected = true
+                cameraInstance.discontinuityPending = true
             }
         default:
             break
@@ -614,16 +569,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             
             cameraInstance.isRecording = true
             cameraInstance.isPaused = false
-            cameraInstance.videoIsDisconnected = false
-            cameraInstance.audioIsDisconnected = false
-                cameraInstance.videoTimeOffset = .zero
-                cameraInstance.audioTimeOffset = .zero
-                cameraInstance.lastVideoSampleTime = .zero
-                cameraInstance.lastAudioSampleTime = .zero
+            cameraInstance.discontinuityPending = false
+                cameraInstance.timeOffset = .zero
+                cameraInstance.lastSampleTime = .zero
                 cameraInstance.isFirstVideoFrame = true
                 cameraInstance.isFirstAudioFrame = true
                 cameraInstance.sessionStartTime = .zero
                 cameraInstance.recordingWarmupFramesRemaining = 3
+                cameraInstance.recordingAudioSampleRate = cameraInstance.actualAudioSampleRate
                 
                 DispatchQueue.main.async {
                     result(nil)
@@ -687,11 +640,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
         os_unfair_lock_lock(&cameraInstance.recordingLock)
         if cameraInstance._isPaused {
-            if !cameraInstance._isFirstVideoFrame {
-                cameraInstance._videoIsDisconnected = true
-            }
-            if !cameraInstance._isFirstAudioFrame {
-                cameraInstance._audioIsDisconnected = true
+            if !cameraInstance._isFirstVideoFrame || !cameraInstance._isFirstAudioFrame {
+                cameraInstance._discontinuityPending = true
             }
             cameraInstance._isPaused = false
         }
@@ -774,12 +724,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             
             sessionQueue.sync {
                 if cameraInstance.isRecording {
-                    if !cameraInstance.isFirstVideoFrame {
-                        cameraInstance.videoIsDisconnected = true
-                    }
-                    if !cameraInstance.isFirstAudioFrame {
-                        cameraInstance.audioIsDisconnected = true
-                    }
+                    cameraInstance.discontinuityPending = true
                 }
                 
                 cameraInstance.previewTexture?.prepareForCameraSwitch(position: newPosition)
@@ -824,19 +769,18 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     cameraInstance.capturePreset = targetPreset
                     cameraInstance.captureDimensions = dimensions(for: targetPreset)
                 }
+
+                // Set orientation/mirroring BEFORE committing, so the very first
+                // frame from the new camera has the correct orientation.
+                cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
                 
                 captureSession.commitConfiguration()
-                cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
                 cameraInstance.previewTexture?.beginPostSwitchStabilization()
             }
 
             if let switchError {
                 result(switchError)
                 return
-            }
-
-            DispatchQueue.main.async {
-                cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
             }
 
             cameraInstance.lensPosition = newPosition
@@ -894,7 +838,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         
         let recordingPath = cameraInstance.recordingURL?.path
         
-        if assetWriter.status == .writing {
+        switch assetWriter.status {
+        case .writing:
             assetWriter.finishWriting {
                 DispatchQueue.main.async {
                     if assetWriter.status == .completed {
@@ -905,61 +850,87 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     }
                 }
             }
-        } else {
-            result(FlutterError(code: "NOT_RECORDING", message: "Recording was not started", details: nil))
+        case .unknown:
+            // Recording was requested but the asset writer never received frames
+            // (e.g. user stopped too quickly, before warmup frames arrived).
+            // Clean up and return nil to signal an empty recording.
+            if let url = cameraInstance.recordingURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            cameraInstance.assetWriter = nil
+            cameraInstance.videoWriterInput = nil
+            cameraInstance.audioWriterInput = nil
+            cameraInstance.recordingURL = nil
+            result(nil)
+        case .failed:
+            let error = assetWriter.error?.localizedDescription ?? "Unknown error"
+            if let url = cameraInstance.recordingURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            cameraInstance.assetWriter = nil
+            cameraInstance.videoWriterInput = nil
+            cameraInstance.audioWriterInput = nil
+            cameraInstance.recordingURL = nil
+            result(FlutterError(code: "WRITER_ERROR", message: error, details: nil))
+        default:
+            result(FlutterError(code: "WRITER_ERROR", message: "Asset writer in unexpected state: \(assetWriter.status.rawValue)", details: nil))
         }
     }
     
     private func handleVideoSampleBuffer(_ sampleBuffer: CMSampleBuffer, for cameraInstance: CameraInstance) {
-        guard cameraInstance.isRecording,
+        let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+
+        guard cameraInstance._isRecording,
               let assetWriter = cameraInstance.assetWriter,
               let videoInput = cameraInstance.videoWriterInput else {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
-        
-        let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        
-        if cameraInstance.isPaused {
+
+        if cameraInstance._isPaused {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
-        
-        if cameraInstance.isFirstVideoFrame {
-            if cameraInstance.recordingWarmupFramesRemaining > 0 {
-                cameraInstance.recordingWarmupFramesRemaining -= 1
-                cameraInstance.lastVideoSampleTime = currentTime
+
+        if cameraInstance._isFirstVideoFrame {
+            if cameraInstance._recordingWarmupFramesRemaining > 0 {
+                cameraInstance._recordingWarmupFramesRemaining -= 1
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
 
             if assetWriter.status == .unknown {
                 assetWriter.startWriting()
                 if assetWriter.status == .failed {
-                    print("Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? \"unknown error\")")
+                    print("Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? "unknown error")")
                 }
                 assetWriter.startSession(atSourceTime: currentTime)
-                cameraInstance.sessionStartTime = currentTime
+                cameraInstance._sessionStartTime = currentTime
             }
-            cameraInstance.isFirstVideoFrame = false
-            cameraInstance.lastVideoSampleTime = currentTime
-        } else {
-            if cameraInstance.videoIsDisconnected {
-                cameraInstance.videoIsDisconnected = false
-                let offset = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
-                cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, offset)
-                cameraInstance.lastVideoSampleTime = currentTime
-                return
-            }
-
-            if !videoInput.isReadyForMoreMediaData {
-                let droppedDuration = CMTimeSubtract(currentTime, cameraInstance.lastVideoSampleTime)
-                cameraInstance.videoTimeOffset = CMTimeAdd(cameraInstance.videoTimeOffset, droppedDuration)
-                cameraInstance.lastVideoSampleTime = currentTime
-                return
-            }
-
-            cameraInstance.lastVideoSampleTime = currentTime
+            cameraInstance._isFirstVideoFrame = false
+            cameraInstance._lastSampleTime = currentTime
         }
-        
-        let adjustedTime = CMTimeSubtract(currentTime, cameraInstance.videoTimeOffset)
+
+        if cameraInstance._discontinuityPending {
+            let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
+            cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
+            cameraInstance._discontinuityPending = false
+            cameraInstance._lastSampleTime = currentTime
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
+
+        let timeOffset = cameraInstance._timeOffset
+        cameraInstance._lastSampleTime = currentTime
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        guard videoInput.isReadyForMoreMediaData else {
+            return
+        }
+
+        let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
 
         var adjustedBuffer: CMSampleBuffer?
         var timingInfo = CMSampleTimingInfo(
@@ -1108,60 +1079,77 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 if cameraInstance.actualAudioSampleRate != detectedSampleRate {
                     cameraInstance.actualAudioSampleRate = detectedSampleRate
                 }
+
+                // Reject audio samples whose sample rate doesn't match what the
+                // asset writer was configured with (e.g. Bluetooth HFP drops to
+                // built-in mic at a different rate during a camera switch).
+                // Writing mismatched samples produces garbled audio.
+                if cameraInstance.isRecording,
+                   cameraInstance.recordingAudioSampleRate > 0,
+                   abs(detectedSampleRate - cameraInstance.recordingAudioSampleRate) > 100 {
+                    cameraInstance.discontinuityPending = true
+                    return
+                }
             }
         }
         
         let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-        
-        guard cameraInstance.isRecording,
+
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+
+        guard cameraInstance._isRecording,
               let audioInput = cameraInstance.audioWriterInput else {
-            return
-        }
-        
-        if cameraInstance.isPaused {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
 
-        guard cameraInstance.sessionStartTime != .zero else {
-            cameraInstance.lastAudioSampleTime = currentTime
-            return
-        }
-        
-        if cameraInstance.isFirstAudioFrame {
-            cameraInstance.isFirstAudioFrame = false
-            cameraInstance.lastAudioSampleTime = currentTime
-            cameraInstance.audioTimeOffset = CMTimeSubtract(currentTime, cameraInstance.sessionStartTime)
-        }
-        
-        if cameraInstance.audioIsDisconnected {
-            if cameraInstance.previewTexture?.isDroppingFramesAfterSwitch ?? false {
-                return
-            }
-            cameraInstance.audioIsDisconnected = false
-            let offset = CMTimeSubtract(currentTime, cameraInstance.lastAudioSampleTime)
-            cameraInstance.audioTimeOffset = CMTimeAdd(cameraInstance.audioTimeOffset, offset)
-            cameraInstance.lastAudioSampleTime = currentTime
+        if cameraInstance._isPaused {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
 
-        if !audioInput.isReadyForMoreMediaData {
-            let droppedDuration = CMTimeSubtract(currentTime, cameraInstance.lastAudioSampleTime)
-            cameraInstance.audioTimeOffset = CMTimeAdd(cameraInstance.audioTimeOffset, droppedDuration)
-            cameraInstance.lastAudioSampleTime = currentTime
+        guard cameraInstance._sessionStartTime != .zero else {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
-        
-        cameraInstance.lastAudioSampleTime = currentTime
-        
-        let adjustedTime = CMTimeSubtract(currentTime, cameraInstance.audioTimeOffset)
-        
+
+        // Suppress audio during video stabilization after camera switch
+        if cameraInstance.previewTexture?.isDroppingFramesAfterSwitch ?? false {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
+
+        if cameraInstance._isFirstAudioFrame {
+            cameraInstance._isFirstAudioFrame = false
+            cameraInstance._lastSampleTime = currentTime
+        }
+
+        if cameraInstance._discontinuityPending {
+            let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
+            cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
+            cameraInstance._discontinuityPending = false
+            cameraInstance._lastSampleTime = currentTime
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
+
+        let timeOffset = cameraInstance._timeOffset
+        cameraInstance._lastSampleTime = currentTime
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        guard audioInput.isReadyForMoreMediaData else {
+            return
+        }
+
+        let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
+
         var adjustedBuffer: CMSampleBuffer?
         var timingInfo = CMSampleTimingInfo(
             duration: CMSampleBufferGetDuration(sampleBuffer),
             presentationTimeStamp: adjustedTime,
             decodeTimeStamp: .invalid
         )
-        
+
         CMSampleBufferCreateCopyWithNewTiming(
             allocator: kCFAllocatorDefault,
             sampleBuffer: sampleBuffer,
@@ -1169,7 +1157,7 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             sampleTimingArray: &timingInfo,
             sampleBufferOut: &adjustedBuffer
         )
-        
+
         if let adjustedBuffer = adjustedBuffer {
             audioInput.append(adjustedBuffer)
         }

@@ -187,7 +187,7 @@ final class CameraBuilderRecordingState extends ActiveCameraState {
 
   Future<void> pauseRecording() => controller.pauseRecording();
 
-  Future<String> stopRecording() => controller.stopRecording();
+  Future<String?> stopRecording() => controller.stopRecording();
 
   @override
   String get name => 'recording';
@@ -205,7 +205,7 @@ final class CameraBuilderPausedState extends ActiveCameraState {
 
   Future<void> resumeRecording() => controller.resumeRecording();
 
-  Future<String> stopRecording() => controller.stopRecording();
+  Future<String?> stopRecording() => controller.stopRecording();
 
   @override
   String get name => 'paused';
@@ -221,7 +221,7 @@ final class CameraBuilderSwitchingState extends ActiveCameraState {
         hasMultipleCameras: base.hasMultipleCameras,
       );
 
-  Future<String> stopRecording() => controller.stopRecording();
+  Future<String?> stopRecording() => controller.stopRecording();
 
   @override
   String get name => 'switchingCamera';
