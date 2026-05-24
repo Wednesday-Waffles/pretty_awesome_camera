@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/audio_device_changed_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
@@ -26,6 +27,13 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<void>? _initializationFuture;
   Future<String?>? _stopRecordingFuture;
   Future<void>? _switchCameraFuture;
+  StreamSubscription<AudioDeviceChangedEvent>? _audioDeviceSubscription;
+  final StreamController<AudioDeviceChangedEvent> _audioDeviceChangedController =
+      StreamController<AudioDeviceChangedEvent>.broadcast();
+
+  /// Stream of audio input device change events.
+  Stream<AudioDeviceChangedEvent> get onAudioDeviceChanged =>
+      _audioDeviceChangedController.stream;
 
   CameraController({
     CameraDescription? description,
@@ -473,6 +481,8 @@ class CameraController extends ValueNotifier<CameraState> {
     final currentCameraId = cameraId;
     await _recordingStateSubscription?.cancel();
     _recordingStateSubscription = null;
+    await _audioDeviceSubscription?.cancel();
+    _audioDeviceSubscription = null;
 
     if (currentCameraId != null) {
       await _platform.disposeCamera(currentCameraId);
@@ -545,6 +555,7 @@ class CameraController extends ValueNotifier<CameraState> {
       final cameraId = await _platform.createCamera(description, config);
       final initializationResult = await _platform.initializeCamera(cameraId);
       await _subscribeToRecordingState(cameraId);
+      await _subscribeToAudioDeviceChanged(cameraId);
 
       _setValueSafely(
         _cameraSnapshot.copyWith(
@@ -625,6 +636,13 @@ class CameraController extends ValueNotifier<CameraState> {
     _recordingStateSubscription = _platform
         .onRecordingStateChanged(cameraId)
         .listen(_handleRecordingState);
+  }
+
+  Future<void> _subscribeToAudioDeviceChanged(int cameraId) async {
+    await _audioDeviceSubscription?.cancel();
+    _audioDeviceSubscription = _platform
+        .onAudioDeviceChanged(cameraId)
+        .listen(_audioDeviceChangedController.add);
   }
 
   void _handleRecordingState(RecordingState state) {
@@ -773,6 +791,14 @@ class CameraController extends ValueNotifier<CameraState> {
       unawaited(subscription.cancel());
     }
     _recordingStateSubscription = null;
+
+    final audioSubscription = _audioDeviceSubscription;
+    if (audioSubscription != null) {
+      unawaited(audioSubscription.cancel());
+    }
+    _audioDeviceSubscription = null;
+    unawaited(_audioDeviceChangedController.close());
+
     final currentCameraId = cameraId;
     if (currentCameraId != null) {
       unawaited(_platform.disposeCamera(currentCameraId));

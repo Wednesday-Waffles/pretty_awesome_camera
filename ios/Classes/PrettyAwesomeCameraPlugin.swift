@@ -9,6 +9,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     private var textureRegistry: FlutterTextureRegistry?
     private var eventChannels: [Int: FlutterEventChannel] = [:]
     private var streamHandlers: [Int: RecordingStateStreamHandler] = [:]
+    private var audioEventChannels: [Int: FlutterEventChannel] = [:]
+    private var audioStreamHandlers: [Int: AudioDeviceStreamHandler] = [:]
     private var registrar: FlutterPluginRegistrar?
     private let sessionQueue = DispatchQueue(label: "com.prettyawesome.camera.session")
     private var stateLock = os_unfair_lock()
@@ -387,6 +389,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 stateChannel.setStreamHandler(streamHandler)
                 eventChannels[cameraId] = stateChannel
                 streamHandlers[cameraId] = streamHandler
+                
+                let audioChannel = FlutterEventChannel(
+                    name: "pretty_awesome_camera/audio_device_\(cameraId)",
+                    binaryMessenger: registrar.messenger()
+                )
+                let audioStreamHandler = AudioDeviceStreamHandler()
+                audioChannel.setStreamHandler(audioStreamHandler)
+                audioEventChannels[cameraId] = audioChannel
+                audioStreamHandlers[cameraId] = audioStreamHandler
             }
             
             sessionQueue.sync {
@@ -445,6 +456,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
         streamHandlers.removeValue(forKey: cameraId)
         
+        if let audioChannel = audioEventChannels[cameraId] {
+            audioChannel.setStreamHandler(nil)
+            audioEventChannels.removeValue(forKey: cameraId)
+        }
+        audioStreamHandlers.removeValue(forKey: cameraId)
+        
         os_unfair_lock_lock(&stateLock)
         let remainingCameras = cameras.count
         let hasActiveRecording = cameras.values.contains { $0.isRecording }
@@ -476,10 +493,35 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         os_unfair_lock_unlock(&stateLock)
         
         switch reason {
-        case .oldDeviceUnavailable, .newDeviceAvailable:
+        case .oldDeviceUnavailable, .newDeviceAvailable, .categoryChange, .routeConfigurationChange:
+            let audioSession = AVAudioSession.sharedInstance()
+            let currentRoute = audioSession.currentRoute
+            let activeInput = currentRoute.inputs.first
+            let deviceName = activeInput?.portName ?? "iPhone Microphone"
+            let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
+            let hasBluetoothInput = currentRoute.inputs.contains { port in
+                port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+            }
+            
             for cameraInstance in activeCameras where cameraInstance.isRecording {
                 cameraInstance.discontinuityPending = true
             }
+            
+            os_unfair_lock_lock(&stateLock)
+            for (cameraId, _) in cameras {
+                if let streamHandler = audioStreamHandlers[cameraId] {
+                    let eventData: [String: Any] = [
+                        "event": "audioRouteChanged",
+                        "deviceName": deviceName,
+                        "portType": portType,
+                        "isBluetooth": hasBluetoothInput
+                    ]
+                    DispatchQueue.main.async {
+                        streamHandler.sendEvent(eventData)
+                    }
+                }
+            }
+            os_unfair_lock_unlock(&stateLock)
         default:
             break
         }
@@ -1572,5 +1614,39 @@ class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
         self.eventSink = nil
         return nil
+    }
+}
+
+class AudioDeviceStreamHandler: NSObject, FlutterStreamHandler {
+    private var eventSink: FlutterEventSink?
+    
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        self.eventSink = events
+        
+        let audioSession = AVAudioSession.sharedInstance()
+        let currentRoute = audioSession.currentRoute
+        let activeInput = currentRoute.inputs.first
+        let deviceName = activeInput?.portName ?? "iPhone Microphone"
+        let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
+        let hasBluetoothInput = currentRoute.inputs.contains { port in
+            port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+        }
+        
+        events([
+            "event": "initial",
+            "deviceName": deviceName,
+            "portType": portType,
+            "isBluetooth": hasBluetoothInput
+        ])
+        return nil
+    }
+    
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        self.eventSink = nil
+        return nil
+    }
+    
+    func sendEvent(_ event: [String: Any]) {
+        eventSink?(event)
     }
 }

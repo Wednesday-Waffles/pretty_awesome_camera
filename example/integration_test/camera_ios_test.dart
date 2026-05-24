@@ -66,7 +66,7 @@ void main() {
       expect(filePath, isNotEmpty);
 
       // Verify file exists
-      final file = File(filePath);
+      final file = File(filePath!);
       expect(await file.exists(), isTrue);
 
       // Dispose camera

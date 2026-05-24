@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../models/audio_device_changed_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
@@ -186,6 +187,22 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
             (e) => e.name == state as String,
           );
         })
+        .handleError((error) {
+          throw CameraException(
+            code: 'stream_error',
+            message: error.toString(),
+          );
+        });
+  }
+
+  @override
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
+    final audioDeviceChannel = EventChannel(
+      'pretty_awesome_camera/audio_device_$cameraId',
+    );
+    return audioDeviceChannel
+        .receiveBroadcastStream()
+        .map((event) => AudioDeviceChangedEvent.fromMap(event as Map))
         .handleError((error) {
           throw CameraException(
             code: 'stream_error',
