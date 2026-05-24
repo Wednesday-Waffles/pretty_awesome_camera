@@ -57,8 +57,9 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError('startRecording() has not been implemented.');
   }
 
-  /// Stops recording and returns the file path of the saved video.
-  Future<String> stopRecording(int cameraId) {
+  /// Stops recording and returns the file path of the saved video,
+  /// or null if recording was stopped before any frames were captured.
+  Future<String?> stopRecording(int cameraId) {
     throw UnimplementedError('stopRecording() has not been implemented.');
   }
 

@@ -24,7 +24,7 @@ class CameraController extends ValueNotifier<CameraState> {
   StreamSubscription<RecordingState>? _recordingStateSubscription;
   bool _isControllerDisposed = false;
   Future<void>? _initializationFuture;
-  Future<String>? _stopRecordingFuture;
+  Future<String?>? _stopRecordingFuture;
 
   CameraController({
     CameraDescription? description,
@@ -345,7 +345,7 @@ class CameraController extends ValueNotifier<CameraState> {
     }
   }
 
-  Future<String> stopRecording() async {
+  Future<String?> stopRecording() async {
     _assertInitialized('stopRecording');
 
     // If already stopping, return the in-flight future to deduplicate
@@ -377,14 +377,22 @@ class CameraController extends ValueNotifier<CameraState> {
     });
   }
 
-  Future<String> _stopRecordingInternal(CameraSnapshot previous) async {
+  Future<String?> _stopRecordingInternal(CameraSnapshot previous) async {
     try {
       final filePath = await _platform.stopRecording(cameraId!);
-      _setValueSafely(
-        _cameraSnapshot.copyWith(
-          state: _cameraVideoRecordedState(recordedFilePath: filePath),
-        ),
-      );
+      if (filePath != null) {
+        _setValueSafely(
+          _cameraSnapshot.copyWith(
+            state: _cameraVideoRecordedState(recordedFilePath: filePath),
+          ),
+        );
+      } else {
+        // Recording stopped before any frames were captured.
+        // Transition back to ready state.
+        _setValueSafely(
+          _cameraSnapshot.copyWith(state: _cameraReadyState()),
+        );
+      }
       return filePath;
     } on CameraException catch (error) {
       _setValueSafely(
