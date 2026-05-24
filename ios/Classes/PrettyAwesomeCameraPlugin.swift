@@ -45,6 +45,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var isUsingBluetoothInput: Bool = false
         var actualAudioSampleRate: Double = 44100
         var recordingAudioSampleRate: Double = 0
+        var recordingAudioChannelCount: UInt32 = 0
+        var audioConverter: AVAudioConverter?
+        var audioConverterInputFormat: AVAudioFormat?
+        
+        func resetAudioConverter() {
+            audioConverter = nil
+            audioConverterInputFormat = nil
+        }
         
         init(cameraId: Int) {
             self.cameraId = cameraId
@@ -577,6 +585,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.sessionStartTime = .zero
                 cameraInstance.recordingWarmupFramesRemaining = 3
                 cameraInstance.recordingAudioSampleRate = cameraInstance.actualAudioSampleRate
+                cameraInstance.recordingAudioChannelCount = 0
                 
                 DispatchQueue.main.async {
                     result(nil)
@@ -830,6 +839,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         // Clear frame rate storage when recording stops
         cameraInstance.activeFrameRateMin = nil
         cameraInstance.activeFrameRateMax = nil
+        cameraInstance.resetAudioConverter()
 
         guard let assetWriter = cameraInstance.assetWriter else {
             result(FlutterError(code: "WRITER_ERROR", message: "No asset writer available", details: nil))
@@ -1072,24 +1082,100 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         
         guard let cameraInstance = targetCameraInstance else { return }
         
+        var detectedChannels: UInt32 = 1
         if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {
             let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
             if let asbd = audioStreamBasicDescription {
                 let detectedSampleRate = asbd.pointee.mSampleRate
+                detectedChannels = asbd.pointee.mChannelsPerFrame
                 if cameraInstance.actualAudioSampleRate != detectedSampleRate {
                     cameraInstance.actualAudioSampleRate = detectedSampleRate
                 }
-
-                // Reject audio samples whose sample rate doesn't match what the
-                // asset writer was configured with (e.g. Bluetooth HFP drops to
-                // built-in mic at a different rate during a camera switch).
-                // Writing mismatched samples produces garbled audio.
-                if cameraInstance.isRecording,
-                   cameraInstance.recordingAudioSampleRate > 0,
-                   abs(detectedSampleRate - cameraInstance.recordingAudioSampleRate) > 100 {
-                    cameraInstance.discontinuityPending = true
-                    return
+                if cameraInstance.isRecording && cameraInstance.recordingAudioChannelCount == 0 {
+                    cameraInstance.recordingAudioChannelCount = detectedChannels
                 }
+            }
+        }
+        
+        // If the incoming sample rate or channel count doesn't match the recording format,
+        // resample the audio so recording continues seamlessly (e.g. when
+        // AirPods disconnect/connect and the audio format changes).
+        let targetSampleRate = cameraInstance.recordingAudioSampleRate
+        let targetChannels = cameraInstance.recordingAudioChannelCount
+        
+        let needsConversion = cameraInstance.isRecording &&
+                              targetSampleRate > 0 &&
+                              targetChannels > 0 &&
+                              (abs(cameraInstance.actualAudioSampleRate - targetSampleRate) > 100 ||
+                               detectedChannels != targetChannels)
+        
+        if needsConversion {
+            let currentTime = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
+            
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            
+            guard let audioInput = cameraInstance.audioWriterInput else {
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            if cameraInstance._isPaused {
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            guard cameraInstance._sessionStartTime != .zero else {
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            // Suppress audio during video stabilization after camera switch
+            if cameraInstance.previewTexture?.isDroppingFramesAfterSwitch ?? false {
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            if cameraInstance._isFirstAudioFrame {
+                cameraInstance._isFirstAudioFrame = false
+                cameraInstance._lastSampleTime = currentTime
+            }
+
+            if cameraInstance._discontinuityPending {
+                let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
+                cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
+                cameraInstance._discontinuityPending = false
+                cameraInstance._lastSampleTime = currentTime
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            let timeOffset = cameraInstance._timeOffset
+            cameraInstance._lastSampleTime = currentTime
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+            guard audioInput.isReadyForMoreMediaData else {
+                return
+            }
+
+            let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
+            
+            if let resampled = self.resampleAudioBuffer(
+                sampleBuffer,
+                to: targetSampleRate,
+                targetChannels: targetChannels,
+                presentationTime: adjustedTime,
+                cameraInstance: cameraInstance
+            ) {
+                audioInput.append(resampled)
+            } else {
+                // Resampling failed — flag discontinuity and drop this sample
+                cameraInstance.discontinuityPending = true
+            }
+            return
+        } else {
+            // Rate matches — clear the converter if it was set from a prior mismatch
+            if cameraInstance.audioConverter != nil {
+                cameraInstance.resetAudioConverter()
             }
         }
         
@@ -1161,6 +1247,209 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         if let adjustedBuffer = adjustedBuffer {
             audioInput.append(adjustedBuffer)
         }
+    }
+    
+    /// Resamples an audio CMSampleBuffer to the target sample rate and channel layout using AVAudioConverter.
+    /// The converter is lazily created and cached on the CameraInstance.
+    private func resampleAudioBuffer(
+        _ sampleBuffer: CMSampleBuffer,
+        to targetSampleRate: Double,
+        targetChannels: UInt32,
+        presentationTime: CMTime,
+        cameraInstance: CameraInstance
+    ) -> CMSampleBuffer? {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription) else {
+            return nil
+        }
+        
+        let inputSampleRate = asbd.pointee.mSampleRate
+        let inputChannels = asbd.pointee.mChannelsPerFrame
+        
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: inputSampleRate,
+            channels: AVAudioChannelCount(inputChannels),
+            interleaved: false
+        ) else {
+            return nil
+        }
+        
+        guard let outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: targetSampleRate,
+            channels: AVAudioChannelCount(targetChannels),
+            interleaved: false
+        ) else {
+            return nil
+        }
+        
+        // Create or update the converter if the input format changed
+        if cameraInstance.audioConverter == nil ||
+           cameraInstance.audioConverterInputFormat != inputFormat {
+            guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+                return nil
+            }
+            cameraInstance.audioConverter = converter
+            cameraInstance.audioConverterInputFormat = inputFormat
+        }
+        
+        guard let converter = cameraInstance.audioConverter else {
+            return nil
+        }
+        
+        // Extract sample count and create input PCM buffer
+        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard sampleCount > 0 else { return nil }
+        
+        guard let inputPCMBuffer = AVAudioPCMBuffer(
+            pcmFormat: inputFormat,
+            frameCapacity: AVAudioFrameCount(sampleCount)
+        ) else {
+            return nil
+        }
+        inputPCMBuffer.frameLength = AVAudioFrameCount(sampleCount)
+        
+        // Copy audio data from CMSampleBuffer into AVAudioPCMBuffer
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else {
+            return nil
+        }
+        
+        var dataPointer: UnsafeMutablePointer<Int8>?
+        var lengthAtOffset: Int = 0
+        var totalLength: Int = 0
+        let status = CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: &lengthAtOffset,
+            totalLengthOut: &totalLength,
+            dataPointerOut: &dataPointer
+        )
+        guard status == kCMBlockBufferNoErr, let rawData = dataPointer else {
+            return nil
+        }
+        
+        // The input from the capture session is typically interleaved Int16 PCM.
+        // Convert to Float32 non-interleaved for AVAudioConverter.
+        let int16Count = totalLength / MemoryLayout<Int16>.size
+        let int16Pointer = UnsafeRawPointer(rawData).bindMemory(
+            to: Int16.self,
+            capacity: int16Count
+        )
+        
+        if let floatChannelData = inputPCMBuffer.floatChannelData {
+            let framesToCopy = min(Int(inputPCMBuffer.frameLength), int16Count / Int(inputChannels))
+            for frame in 0..<framesToCopy {
+                for ch in 0..<Int(inputChannels) {
+                    let sampleIndex = frame * Int(inputChannels) + ch
+                    if sampleIndex < int16Count {
+                        floatChannelData[ch][frame] = Float(int16Pointer[sampleIndex]) / 32768.0
+                    }
+                }
+            }
+        }
+        
+        // Calculate output frame count based on sample rate ratio
+        let ratio = targetSampleRate / inputSampleRate
+        let outputFrameCount = AVAudioFrameCount(ceil(Double(sampleCount) * ratio))
+        
+        guard let outputPCMBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: outputFrameCount
+        ) else {
+            return nil
+        }
+        
+        // Perform the conversion
+        var conversionError: NSError?
+        let conversionStatus = converter.convert(to: outputPCMBuffer, error: &conversionError) { inNumPackets, outStatus in
+            outStatus.pointee = .haveData
+            return inputPCMBuffer
+        }
+        
+        guard conversionStatus != .error, conversionError == nil else {
+            return nil
+        }
+        
+        let outputFrameLength = outputPCMBuffer.frameLength
+        guard outputFrameLength > 0 else { return nil }
+        
+        // Create an AudioStreamBasicDescription for Int16 output (what the asset writer expects)
+        var outputASBD = AudioStreamBasicDescription(
+            mSampleRate: targetSampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
+            mBytesPerPacket: UInt32(2 * targetChannels),
+            mFramesPerPacket: 1,
+            mBytesPerFrame: UInt32(2 * targetChannels),
+            mChannelsPerFrame: targetChannels,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        
+        // Convert Float32 back to Int16 for the output CMSampleBuffer
+        let outputByteCount = Int(outputFrameLength) * Int(targetChannels) * 2
+        let outputData = UnsafeMutablePointer<Int16>.allocate(capacity: Int(outputFrameLength) * Int(targetChannels))
+        defer { outputData.deallocate() }
+        
+        if let floatChannelData = outputPCMBuffer.floatChannelData {
+            for frame in 0..<Int(outputFrameLength) {
+                for ch in 0..<Int(targetChannels) {
+                    let floatSample = max(-1.0, min(1.0, floatChannelData[ch][frame]))
+                    outputData[frame * Int(targetChannels) + ch] = Int16(floatSample * 32767.0)
+                }
+            }
+        }
+        
+        // Create output CMSampleBuffer
+        var outputFormatDescription: CMAudioFormatDescription?
+        CMAudioFormatDescriptionCreate(
+            allocator: kCFAllocatorDefault,
+            asbd: &outputASBD,
+            layoutSize: 0,
+            layout: nil,
+            magicCookieSize: 0,
+            magicCookie: nil,
+            extensions: nil,
+            formatDescriptionOut: &outputFormatDescription
+        )
+        
+        guard let outFormatDesc = outputFormatDescription else { return nil }
+        
+        var outputBlockBuffer: CMBlockBuffer?
+        CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: outputByteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: outputByteCount,
+            flags: 0,
+            blockBufferOut: &outputBlockBuffer
+        )
+        
+        guard let blockBuf = outputBlockBuffer else { return nil }
+        
+        CMBlockBufferReplaceDataBytes(
+            with: outputData,
+            blockBuffer: blockBuf,
+            offsetIntoDestination: 0,
+            dataLength: outputByteCount
+        )
+        
+        var outputSampleBuffer: CMSampleBuffer?
+        CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuf,
+            formatDescription: outFormatDesc,
+            sampleCount: CMItemCount(outputFrameLength),
+            presentationTimeStamp: presentationTime,
+            packetDescriptions: nil,
+            sampleBufferOut: &outputSampleBuffer
+        )
+        
+        return outputSampleBuffer
     }
 }
 
