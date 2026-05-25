@@ -48,7 +48,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var isUsingBluetoothInput: Bool = false
         var actualAudioSampleRate: Double = 44100
         var recordingAudioSampleRate: Double = 0
-        var recordingAudioChannelCount: UInt32 = 0
+        var recordingAudioChannelCount: UInt32 = 1
         var audioConverter: AVAudioConverter?
         var audioConverterInputFormat: AVAudioFormat?
         
@@ -359,6 +359,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             let audioDataOutput = AVCaptureAudioDataOutput()
+            
             let audioQueue = DispatchQueue(label: "com.prettyawesome.camera.audio")
             audioDataOutput.setSampleBufferDelegate(self, queue: audioQueue)
             if captureSession.canAddOutput(audioDataOutput) {
@@ -414,14 +415,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 audioStreamHandlers[cameraId] = audioStreamHandler
             }
             
-            sessionQueue.sync {
-                cameraInstance.previewTexture?.updateForNewCamera(position: cameraInstance.lensPosition)
-                captureSession.startRunning()
-                cameraInstance.previewTexture?.updateForNewCamera(position: cameraInstance.lensPosition)
-            }
-
             sessionQueue.async { [weak self, weak cameraInstance] in
                 guard let self = self, let cameraInstance = cameraInstance else { return }
+                cameraInstance.previewTexture?.updateForNewCamera(position: cameraInstance.lensPosition)
+                cameraInstance.captureSession?.startRunning()
+                cameraInstance.previewTexture?.updateForNewCamera(position: cameraInstance.lensPosition)
+                
                 self.prewarmRecordingPipeline(for: cameraInstance)
             }
             
@@ -518,6 +517,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             for cameraInstance in activeCameras where cameraInstance.isRecording {
+                NSLog("%@", "PrettyAwesomeCameraPlugin: Audio route changed during recording. New active microphone: \(deviceName) (Type: \(portType))")
                 // Use audio-specific discontinuity flag — NOT the shared _discontinuityPending.
                 // Audio route changes only affect the audio pipeline. The video pipeline
                 // continues uninterrupted at 30fps. If we set the shared flag, video would
@@ -638,6 +638,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             cameraInstance.isRecording = true
+            
+            // Log active microphone when starting the recording
+            let activeInput = currentRoute.inputs.first
+            let deviceName = activeInput?.portName ?? "iPhone Microphone"
+            let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Started recording. Active microphone: \(deviceName) (Type: \(portType))")
+            
             cameraInstance.isPaused = false
             cameraInstance.discontinuityPending = false
                 cameraInstance.timeOffset = .zero
@@ -647,7 +654,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.sessionStartTime = .zero
                 cameraInstance.recordingWarmupFramesRemaining = 3
                 cameraInstance.recordingAudioSampleRate = cameraInstance.actualAudioSampleRate
-                cameraInstance.recordingAudioChannelCount = 0
+                cameraInstance.recordingAudioChannelCount = 1
                 
                 DispatchQueue.main.async {
                     result(nil)
@@ -789,7 +796,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     device.unlockForConfiguration()
                 } catch {
                     // Log error but continue with switch (graceful degradation)
-                    print("Warning: Failed to apply frame rate during camera switch: \(error.localizedDescription)")
+                    NSLog("%@", "Warning: Failed to apply frame rate during camera switch: \(error.localizedDescription)")
                 }
             }
             
@@ -895,8 +902,20 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             return
         }
         
-        cameraInstance.isRecording = false
-        cameraInstance.isPaused = false
+        // Log active microphone when stopping the recording
+        let audioSession = AVAudioSession.sharedInstance()
+        let currentRoute = audioSession.currentRoute
+        let activeInput = currentRoute.inputs.first
+        let deviceName = activeInput?.portName ?? "iPhone Microphone"
+        let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
+        NSLog("%@", "PrettyAwesomeCameraPlugin: Stopped recording. Final active microphone: \(deviceName) (Type: \(portType))")
+        
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+        cameraInstance._isRecording = false
+        cameraInstance._isPaused = false
+        cameraInstance.videoWriterInput = nil
+        cameraInstance.audioWriterInput = nil
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
         // Clear frame rate storage when recording stops
         cameraInstance.activeFrameRateMin = nil
@@ -976,7 +995,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             if assetWriter.status == .unknown {
                 assetWriter.startWriting()
                 if assetWriter.status == .failed {
-                    print("Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? "unknown error")")
+                    NSLog("%@", "Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? "unknown error")")
                 }
                 assetWriter.startSession(atSourceTime: currentTime)
                 cameraInstance._sessionStartTime = currentTime
@@ -996,9 +1015,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
         let timeOffset = cameraInstance._timeOffset
         cameraInstance._lastSampleTime = currentTime
-        os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
         guard videoInput.isReadyForMoreMediaData else {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
 
@@ -1022,6 +1041,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         if let adjustedBuffer = adjustedBuffer {
             videoInput.append(adjustedBuffer)
         }
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
     }
 
     private func resolveCapturePreset(for presetName: String, session: AVCaptureSession) -> AVCaptureSession.Preset {
@@ -1153,8 +1173,8 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 if cameraInstance.actualAudioSampleRate != detectedSampleRate {
                     cameraInstance.actualAudioSampleRate = detectedSampleRate
                 }
-                if cameraInstance.isRecording && cameraInstance.recordingAudioChannelCount == 0 {
-                    cameraInstance.recordingAudioChannelCount = detectedChannels
+                 if cameraInstance.isRecording && cameraInstance.recordingAudioChannelCount == 0 {
+                    cameraInstance.recordingAudioChannelCount = 1
                 }
             }
         }
@@ -1176,7 +1196,8 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             
             os_unfair_lock_lock(&cameraInstance.recordingLock)
             
-            guard let audioInput = cameraInstance.audioWriterInput else {
+            guard cameraInstance._isRecording,
+                  let audioInput = cameraInstance.audioWriterInput else {
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
@@ -1223,9 +1244,9 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
 
             let timeOffset = cameraInstance._timeOffset
             cameraInstance._lastSampleTime = currentTime
-            os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
             guard audioInput.isReadyForMoreMediaData else {
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
 
@@ -1240,13 +1261,14 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             ) {
                 if !audioInput.append(resampled) {
                     if let error = cameraInstance.assetWriter?.error {
-                        print("PrettyAwesomeCameraPlugin: Resampled audio append failed. Error: \(error.localizedDescription)")
+                        NSLog("%@", "PrettyAwesomeCameraPlugin: Resampled audio append failed. Error: \(error.localizedDescription)")
                     }
                 }
             } else {
                 // Resampling failed — drop this sample, reset converter, and log warning without flagging a recording-wide discontinuity
                 cameraInstance.resetAudioConverter()
             }
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         } else {
             // Rate matches — clear the converter if it was set from a prior mismatch
@@ -1297,9 +1319,9 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
 
         let timeOffset = cameraInstance._timeOffset
         cameraInstance._lastSampleTime = currentTime
-        os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
         guard audioInput.isReadyForMoreMediaData else {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
 
@@ -1323,10 +1345,11 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         if let adjustedBuffer = adjustedBuffer {
             if !audioInput.append(adjustedBuffer) {
                 if let error = cameraInstance.assetWriter?.error {
-                    print("PrettyAwesomeCameraPlugin: Direct audio append failed. Error: \(error.localizedDescription)")
+                    NSLog("%@", "PrettyAwesomeCameraPlugin: Direct audio append failed. Error: \(error.localizedDescription)")
                 }
             }
         }
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
     }
     
     /// Resamples an audio CMSampleBuffer to the target sample rate and channel layout using AVAudioConverter.
@@ -1345,6 +1368,19 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         
         let inputSampleRate = asbd.pointee.mSampleRate
         let inputChannels = asbd.pointee.mChannelsPerFrame
+        let formatFlags = asbd.pointee.mFormatFlags
+        let bitsPerChannel = asbd.pointee.mBitsPerChannel
+        
+        let isFloat = (formatFlags & kLinearPCMFormatFlagIsFloat) != 0
+        let isSignedInteger = (formatFlags & kLinearPCMFormatFlagIsSignedInteger) != 0
+        let isNonInterleaved = (formatFlags & kLinearPCMFormatFlagIsNonInterleaved) != 0
+        
+        // Assert that the incoming format is a supported Linear PCM format (Float32, Int32, or Int16)
+        guard (bitsPerChannel == 16 && isSignedInteger) ||
+              (bitsPerChannel == 32 && (isFloat || isSignedInteger)) else {
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Unsupported audio format. Expected 16-bit signed integer, 32-bit float, or 32-bit signed integer PCM.")
+            return nil
+        }
         
         guard let inputFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
@@ -1409,21 +1445,77 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             return nil
         }
         
-        // The input from the capture session is typically interleaved Int16 PCM.
-        // Convert to Float32 non-interleaved for AVAudioConverter.
-        let int16Count = totalLength / MemoryLayout<Int16>.size
-        let int16Pointer = UnsafeRawPointer(rawData).bindMemory(
-            to: Int16.self,
-            capacity: int16Count
-        )
-        
         if let floatChannelData = inputPCMBuffer.floatChannelData {
-            let framesToCopy = min(Int(inputPCMBuffer.frameLength), int16Count / Int(inputChannels))
-            for frame in 0..<framesToCopy {
-                for ch in 0..<Int(inputChannels) {
-                    let sampleIndex = frame * Int(inputChannels) + ch
-                    if sampleIndex < int16Count {
-                        floatChannelData[ch][frame] = Float(int16Pointer[sampleIndex]) / 32768.0
+            if bitsPerChannel == 16 {
+                let int16Count = totalLength / MemoryLayout<Int16>.size
+                let int16Pointer = UnsafeRawPointer(rawData).bindMemory(
+                    to: Int16.self,
+                    capacity: int16Count
+                )
+                let framesToCopy = min(Int(inputPCMBuffer.frameLength), int16Count / Int(inputChannels))
+                if isNonInterleaved {
+                    for ch in 0..<Int(inputChannels) {
+                        let chOffset = ch * Int(inputPCMBuffer.frameLength)
+                        for frame in 0..<framesToCopy {
+                            floatChannelData[ch][frame] = Float(int16Pointer[chOffset + frame]) / 32768.0
+                        }
+                    }
+                } else {
+                    for frame in 0..<framesToCopy {
+                        for ch in 0..<Int(inputChannels) {
+                            let sampleIndex = frame * Int(inputChannels) + ch
+                            if sampleIndex < int16Count {
+                                floatChannelData[ch][frame] = Float(int16Pointer[sampleIndex]) / 32768.0
+                            }
+                        }
+                    }
+                }
+            } else if bitsPerChannel == 32 && isFloat {
+                let floatCount = totalLength / MemoryLayout<Float>.size
+                let floatPointer = UnsafeRawPointer(rawData).bindMemory(
+                    to: Float.self,
+                    capacity: floatCount
+                )
+                let framesToCopy = min(Int(inputPCMBuffer.frameLength), floatCount / Int(inputChannels))
+                if isNonInterleaved {
+                    for ch in 0..<Int(inputChannels) {
+                        let chOffset = ch * Int(inputPCMBuffer.frameLength)
+                        for frame in 0..<framesToCopy {
+                            floatChannelData[ch][frame] = floatPointer[chOffset + frame]
+                        }
+                    }
+                } else {
+                    for frame in 0..<framesToCopy {
+                        for ch in 0..<Int(inputChannels) {
+                            let sampleIndex = frame * Int(inputChannels) + ch
+                            if sampleIndex < floatCount {
+                                floatChannelData[ch][frame] = floatPointer[sampleIndex]
+                            }
+                        }
+                    }
+                }
+            } else if bitsPerChannel == 32 && isSignedInteger {
+                let int32Count = totalLength / MemoryLayout<Int32>.size
+                let int32Pointer = UnsafeRawPointer(rawData).bindMemory(
+                    to: Int32.self,
+                    capacity: int32Count
+                )
+                let framesToCopy = min(Int(inputPCMBuffer.frameLength), int32Count / Int(inputChannels))
+                if isNonInterleaved {
+                    for ch in 0..<Int(inputChannels) {
+                        let chOffset = ch * Int(inputPCMBuffer.frameLength)
+                        for frame in 0..<framesToCopy {
+                            floatChannelData[ch][frame] = Float(int32Pointer[chOffset + frame]) / 2147483648.0
+                        }
+                    }
+                } else {
+                    for frame in 0..<framesToCopy {
+                        for ch in 0..<Int(inputChannels) {
+                            let sampleIndex = frame * Int(inputChannels) + ch
+                            if sampleIndex < int32Count {
+                                floatChannelData[ch][frame] = Float(int32Pointer[sampleIndex]) / 2147483648.0
+                            }
+                        }
                     }
                 }
             }
@@ -1442,14 +1534,20 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         
         // Perform the conversion
         var conversionError: NSError?
-        let conversionStatus = converter.convert(to: outputPCMBuffer, error: &conversionError) { inNumPackets, outStatus in
+        var inputBufferConsumed = false
+        let conversionStatus: AVAudioConverterOutputStatus = converter.convert(to: outputPCMBuffer, error: &conversionError) { inNumPackets, outStatus in
+            if inputBufferConsumed {
+                outStatus.pointee = .noDataNow
+                return nil
+            }
+            inputBufferConsumed = true
             outStatus.pointee = .haveData
             return inputPCMBuffer
         }
         
         guard conversionStatus != .error, conversionError == nil else {
             if let err = conversionError {
-                print("PrettyAwesomeCameraPlugin: AVAudioConverter failed. Error: \(err.localizedDescription), Code: \(err.code)")
+                NSLog("%@", "PrettyAwesomeCameraPlugin: AVAudioConverter failed. Error: \(err.localizedDescription), Code: \(err.code)")
             }
             return nil
         }
