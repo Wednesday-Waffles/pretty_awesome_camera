@@ -42,6 +42,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _isFirstAudioFrame: Bool = true
         fileprivate var _sessionStartTime: CMTime = .zero
         fileprivate var _discontinuityPending: Bool = false
+        fileprivate var _audioDiscontinuityPending: Bool = false
         var activeFrameRateMin: CMTime?
         var activeFrameRateMax: CMTime?
         var isUsingBluetoothInput: Bool = false
@@ -95,6 +96,19 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             set {
                 os_unfair_lock_lock(&recordingLock)
                 _discontinuityPending = newValue
+                os_unfair_lock_unlock(&recordingLock)
+            }
+        }
+
+        var audioDiscontinuityPending: Bool {
+            get {
+                os_unfair_lock_lock(&recordingLock)
+                defer { os_unfair_lock_unlock(&recordingLock) }
+                return _audioDiscontinuityPending
+            }
+            set {
+                os_unfair_lock_lock(&recordingLock)
+                _audioDiscontinuityPending = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
@@ -504,7 +518,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             for cameraInstance in activeCameras where cameraInstance.isRecording {
-                cameraInstance.discontinuityPending = true
+                // Use audio-specific discontinuity flag — NOT the shared _discontinuityPending.
+                // Audio route changes only affect the audio pipeline. The video pipeline
+                // continues uninterrupted at 30fps. If we set the shared flag, video would
+                // consume it within ~33ms, compute an incorrect tiny gap, and accumulate
+                // timing drift that eventually corrupts the AVAssetWriter.
+                cameraInstance.audioDiscontinuityPending = true
+                cameraInstance.resetAudioConverter()
             }
             
             os_unfair_lock_lock(&stateLock)
@@ -1191,6 +1211,16 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 return
             }
 
+            // Audio-only discontinuity (route change: AirPods connect/disconnect).
+            // Drop this first transitional sample and update _lastSampleTime,
+            // but do NOT modify _timeOffset — the video timeline is unaffected.
+            if cameraInstance._audioDiscontinuityPending {
+                cameraInstance._audioDiscontinuityPending = false
+                cameraInstance._lastSampleTime = currentTime
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
             let timeOffset = cameraInstance._timeOffset
             cameraInstance._lastSampleTime = currentTime
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -1208,7 +1238,11 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 presentationTime: adjustedTime,
                 cameraInstance: cameraInstance
             ) {
-                audioInput.append(resampled)
+                if !audioInput.append(resampled) {
+                    if let error = cameraInstance.assetWriter?.error {
+                        print("PrettyAwesomeCameraPlugin: Resampled audio append failed. Error: \(error.localizedDescription)")
+                    }
+                }
             } else {
                 // Resampling failed — drop this sample, reset converter, and log warning without flagging a recording-wide discontinuity
                 cameraInstance.resetAudioConverter()
@@ -1287,7 +1321,11 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         )
 
         if let adjustedBuffer = adjustedBuffer {
-            audioInput.append(adjustedBuffer)
+            if !audioInput.append(adjustedBuffer) {
+                if let error = cameraInstance.assetWriter?.error {
+                    print("PrettyAwesomeCameraPlugin: Direct audio append failed. Error: \(error.localizedDescription)")
+                }
+            }
         }
     }
     
@@ -1410,6 +1448,9 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         }
         
         guard conversionStatus != .error, conversionError == nil else {
+            if let err = conversionError {
+                print("PrettyAwesomeCameraPlugin: AVAudioConverter failed. Error: \(err.localizedDescription), Code: \(err.code)")
+            }
             return nil
         }
         
