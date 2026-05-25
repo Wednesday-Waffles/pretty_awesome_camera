@@ -1210,8 +1210,8 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             ) {
                 audioInput.append(resampled)
             } else {
-                // Resampling failed — flag discontinuity and drop this sample
-                cameraInstance.discontinuityPending = true
+                // Resampling failed — drop this sample, reset converter, and log warning without flagging a recording-wide discontinuity
+                cameraInstance.resetAudioConverter()
             }
             return
         } else {
