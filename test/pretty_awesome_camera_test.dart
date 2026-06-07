@@ -54,6 +54,11 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<bool> canSwitchCamera(int cameraId) {
     throw UnimplementedError();
   }
@@ -122,6 +127,11 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Stream<RecordingState> onRecordingStateChanged(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -230,6 +240,13 @@ void main() {
     test('onRecordingStateChanged throws UnimplementedError', () {
       expect(
         () => platform.onRecordingStateChanged(0),
+        throwsA(isA<UnimplementedError>()),
+      );
+    });
+
+    test('onAudioDeviceChanged throws UnimplementedError', () {
+      expect(
+        () => platform.onAudioDeviceChanged(0),
         throwsA(isA<UnimplementedError>()),
       );
     });

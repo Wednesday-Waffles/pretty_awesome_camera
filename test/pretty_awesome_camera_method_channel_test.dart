@@ -255,7 +255,7 @@ void main() {
       expect(filePath, '/path/to/video.mp4');
     });
 
-    test('throws CameraException when null returned', () async {
+    test('returns null when null returned', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
             if (methodCall.method == 'stopRecording') {
@@ -264,7 +264,8 @@ void main() {
             return null;
           });
 
-      expect(() => platform.stopRecording(0), throwsA(isA<CameraException>()));
+      final filePath = await platform.stopRecording(0);
+      expect(filePath, isNull);
     });
 
     test('throws CameraException on PlatformException', () async {
@@ -396,6 +397,43 @@ void main() {
       final stream = platform.onRecordingStateChanged(0);
       final state = await stream.first;
       expect(state, RecordingState.recording);
+    });
+  });
+
+  group('onAudioDeviceChanged', () {
+    test('returns stream of audio device change events', () async {
+      const EventChannel eventChannel = EventChannel(
+        'pretty_awesome_camera/audio_device_0',
+      );
+
+      final mockEvent = {
+        'event': 'route_change',
+        'deviceName': 'Apple AirPods',
+        'portType': 'BluetoothHFP',
+        'isBluetooth': true,
+      };
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            eventChannel,
+            MockStreamHandler.inline(
+              onListen: (arguments, sink) {
+                sink.success(mockEvent);
+                return null;
+              },
+              onCancel: (arguments) {
+                return null;
+              },
+            ),
+          );
+
+      final stream = platform.onAudioDeviceChanged(0);
+      final event = await stream.first;
+      expect(event, isA<AudioDeviceChangedEvent>());
+      expect(event.event, 'route_change');
+      expect(event.deviceName, 'Apple AirPods');
+      expect(event.portType, 'BluetoothHFP');
+      expect(event.isBluetooth, true);
     });
   });
 }

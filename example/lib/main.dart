@@ -173,7 +173,7 @@ class _CameraLaunchScreenState extends State<CameraLaunchScreen> {
                 Text(
                   'This example primes camera details on app start, creates the controller before navigation, starts prewarm during navigation, and then renders the same controller inside the preview screen.',
                   style: TextStyle(
-                    color: Colors.white.withOpacity(0.75),
+                    color: Colors.white.withValues(alpha: 0.75),
                     fontSize: 15,
                     height: 1.4,
                   ),
@@ -263,6 +263,9 @@ class _CameraScreenState extends State<CameraScreen> {
   final Stopwatch _recordingStopwatch = Stopwatch();
   Timer? _timerUpdateTicker;
 
+  StreamSubscription<AudioDeviceChangedEvent>? _audioDeviceSubscription;
+  AudioDeviceChangedEvent? _currentAudioDevice;
+
   @override
   void initState() {
     super.initState();
@@ -275,11 +278,19 @@ class _CameraScreenState extends State<CameraScreen> {
         _showMessage(error.message);
       }
     });
+    _audioDeviceSubscription = _controller.onAudioDeviceChanged.listen((event) {
+      if (mounted) {
+        setState(() {
+          _currentAudioDevice = event;
+        });
+      }
+    });
   }
 
   @override
   void dispose() {
     _timerUpdateTicker?.cancel();
+    _audioDeviceSubscription?.cancel();
     _controller.removeListener(_handleControllerChanged);
     unawaited(_controller.disposeCamera());
     _controller.dispose();
@@ -456,10 +467,10 @@ class _CameraScreenState extends State<CameraScreen> {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Colors.black.withOpacity(0.58),
+                  Colors.black.withValues(alpha: 0.58),
                   Colors.transparent,
-                  Colors.black.withOpacity(0.18),
-                  Colors.black.withOpacity(0.78),
+                  Colors.black.withValues(alpha: 0.18),
+                  Colors.black.withValues(alpha: 0.78),
                 ],
               ),
             ),
@@ -483,6 +494,10 @@ class _CameraScreenState extends State<CameraScreen> {
                       ),
                     ],
                   ),
+                  if (_currentAudioDevice != null) ...[
+                    const SizedBox(height: 12),
+                    _AudioDeviceCard(device: _currentAudioDevice),
+                  ],
                   // Recording timer
                   if (value is CameraRecordingState ||
                       value is CameraPausedState) ...[
@@ -572,9 +587,9 @@ class _InfoCard extends StatelessWidget {
           width: double.infinity,
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.07),
+            color: Colors.white.withValues(alpha: 0.07),
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withOpacity(0.09)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.09)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -591,7 +606,7 @@ class _InfoCard extends StatelessWidget {
               Text(
                 body,
                 style: TextStyle(
-                  color: Colors.white.withOpacity(0.74),
+                  color: Colors.white.withValues(alpha: 0.74),
                   height: 1.4,
                 ),
               ),
@@ -634,9 +649,9 @@ class _CameraStatusCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           decoration: BoxDecoration(
-            color: Colors.white.withOpacity(0.08),
+            color: Colors.white.withValues(alpha: 0.08),
             borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withOpacity(0.12)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
           ),
           child: Row(
             children: [
@@ -715,9 +730,9 @@ class _CameraSettingsCard extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.28),
+            color: Colors.black.withValues(alpha: 0.28),
             borderRadius: BorderRadius.circular(28),
-            border: Border.all(color: Colors.white.withOpacity(0.08)),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
           ),
           child: Row(
             children: [
@@ -907,9 +922,9 @@ class _GlassActionButton extends StatelessWidget {
             child: Container(
               padding: const EdgeInsets.symmetric(vertical: 16),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.08),
+                color: Colors.white.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(22),
-                border: Border.all(color: Colors.white.withOpacity(0.1)),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
               ),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -951,9 +966,9 @@ class _GlassIconButton extends StatelessWidget {
             width: 48,
             height: 48,
             decoration: BoxDecoration(
-              color: Colors.white.withOpacity(0.08),
+              color: Colors.white.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(22),
-              border: Border.all(color: Colors.white.withOpacity(0.1)),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
             ),
             child: Icon(icon, color: Colors.white),
           ),
@@ -1001,13 +1016,13 @@ class _RecordingTimerDisplay extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
           decoration: BoxDecoration(
             color: isPaused
-                ? Colors.amber.withOpacity(0.2)
-                : const Color(0xFFFF5533).withOpacity(0.2),
+                ? Colors.amber.withValues(alpha: 0.2)
+                : const Color(0xFFFF5533).withValues(alpha: 0.2),
             borderRadius: BorderRadius.circular(24),
             border: Border.all(
               color: isPaused
-                  ? Colors.amber.withOpacity(0.4)
-                  : const Color(0xFFFF5533).withOpacity(0.4),
+                  ? Colors.amber.withValues(alpha: 0.4)
+                  : const Color(0xFFFF5533).withValues(alpha: 0.4),
             ),
           ),
           child: Row(
@@ -1043,6 +1058,93 @@ class _RecordingTimerDisplay extends StatelessWidget {
                   ),
                 ),
               ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _AudioDeviceCard extends StatelessWidget {
+  const _AudioDeviceCard({required this.device});
+
+  final AudioDeviceChangedEvent? device;
+
+  @override
+  Widget build(BuildContext context) {
+    if (device == null) {
+      return const SizedBox.shrink();
+    }
+
+    final deviceName = device!.deviceName;
+    final isBluetooth = device!.isBluetooth;
+    final portType = device!.portType;
+
+    IconData iconData = CupertinoIcons.mic_fill;
+    if (isBluetooth) {
+      iconData = CupertinoIcons.bluetooth;
+    } else if (portType.toLowerCase().contains('headset') ||
+        portType.toLowerCase().contains('headphone')) {
+      iconData = Icons.headphones_rounded;
+    }
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(24),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.08),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+          ),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: isBluetooth
+                      ? Colors.blue.withValues(alpha: 0.15)
+                      : Colors.white.withValues(alpha: 0.1),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  iconData,
+                  color: isBluetooth ? Colors.blueAccent : Colors.white70,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Text(
+                      'ACTIVE MICROPHONE',
+                      style: TextStyle(
+                        color: Colors.white54,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.1,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      deviceName,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),

@@ -1,5 +1,6 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
+import '../models/audio_device_changed_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_initialization_result.dart';
@@ -82,6 +83,13 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
   Stream<RecordingState> onRecordingStateChanged(int cameraId) {
     throw UnimplementedError(
       'onRecordingStateChanged() has not been implemented.',
+    );
+  }
+
+  /// Returns a stream of audio device route changes for the camera with the given ID.
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
+    throw UnimplementedError(
+      'onAudioDeviceChanged() has not been implemented.',
     );
   }
 

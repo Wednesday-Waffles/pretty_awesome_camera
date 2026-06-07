@@ -42,6 +42,10 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
       const Stream<RecordingState>.empty();
 
   @override
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) =>
+      const Stream<AudioDeviceChangedEvent>.empty();
+
+  @override
   Future<bool> canSwitchCamera(int cameraId) async => true;
 
   @override

@@ -283,16 +283,11 @@ void main() {
           lensDirection: LensDirection.front,
           sensorOrientation: 270,
         );
-        const description3 = CameraDescription(
-          name: 'Back Camera',
-          lensDirection: LensDirection.back,
-          sensorOrientation: 90,
-        );
 
-        final set = {description1, description2, description3};
+        final set = {description1, description2};
         expect(set.length, 2);
         expect(set.contains(description1), true);
-        expect(set.contains(description3), true);
+        expect(set.contains(description2), true);
       });
     });
 

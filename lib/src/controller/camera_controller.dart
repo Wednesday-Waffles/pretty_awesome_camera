@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/audio_device_changed_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
@@ -25,6 +26,14 @@ class CameraController extends ValueNotifier<CameraState> {
   bool _isControllerDisposed = false;
   Future<void>? _initializationFuture;
   Future<String?>? _stopRecordingFuture;
+  Future<void>? _switchCameraFuture;
+  StreamSubscription<AudioDeviceChangedEvent>? _audioDeviceSubscription;
+  final StreamController<AudioDeviceChangedEvent> _audioDeviceChangedController =
+      StreamController<AudioDeviceChangedEvent>.broadcast();
+
+  /// Stream of audio input device change events.
+  Stream<AudioDeviceChangedEvent> get onAudioDeviceChanged =>
+      _audioDeviceChangedController.stream;
 
   CameraController({
     CameraDescription? description,
@@ -247,6 +256,32 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<void> switchCamera() async {
     _assertNotDisposed('switchCamera');
 
+    final inFlight = _switchCameraFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _switchCameraInternal();
+    _switchCameraFuture = future;
+    return future.whenComplete(() {
+      if (identical(_switchCameraFuture, future)) {
+        _switchCameraFuture = null;
+      }
+    });
+  }
+
+  Future<void> _switchCameraInternal() async {
+    if (value is CameraSwitchingState) {
+      return;
+    }
+
+    if (value is CameraStartingRecordingState || value is CameraStoppingRecordingState) {
+      throw CameraException(
+        code: 'invalid_state',
+        message: 'Cannot switch camera while starting or stopping recording.',
+      );
+    }
+
     final nextDescription = await _resolveNextCameraDescription();
 
     if (value is CameraRecordingState) {
@@ -267,17 +302,29 @@ class CameraController extends ValueNotifier<CameraState> {
 
       try {
         final switchResult = await _platform.switchCamera(cameraId!);
-        _setValueSafely(
-          _cameraSnapshot.copyWith(
-            state: _cameraReadyState(description: nextDescription),
-            textureId: switchResult.textureId,
-            previewSize: switchResult.previewSize,
-          ),
-        );
+        if (value is CameraSwitchingState) {
+          _setValueSafely(
+            _cameraSnapshot.copyWith(
+              state: _cameraReadyState(description: nextDescription),
+              textureId: switchResult.textureId,
+              previewSize: switchResult.previewSize,
+            ),
+          );
+        } else {
+          _setValueSafely(
+            _cameraSnapshot.copyWith(
+              state: value.copyWith(description: nextDescription),
+              textureId: switchResult.textureId,
+              previewSize: switchResult.previewSize,
+            ),
+          );
+        }
       } on CameraException catch (error) {
-        _setValueSafely(
-          previous.copyWith(state: _stateWithError(previous.state, error)),
-        );
+        if (value is CameraSwitchingState) {
+          _setValueSafely(
+            previous.copyWith(state: _stateWithError(previous.state, error)),
+          );
+        }
         rethrow;
       }
       return;
@@ -305,17 +352,29 @@ class CameraController extends ValueNotifier<CameraState> {
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
-      _setValueSafely(
-        _cameraSnapshot.copyWith(
-          state: _cameraRecordingState(description: nextDescription),
-          textureId: switchResult.textureId,
-          previewSize: switchResult.previewSize,
-        ),
-      );
+      if (value is CameraSwitchingState) {
+        _setValueSafely(
+          _cameraSnapshot.copyWith(
+            state: _cameraRecordingState(description: nextDescription),
+            textureId: switchResult.textureId,
+            previewSize: switchResult.previewSize,
+          ),
+        );
+      } else {
+        _setValueSafely(
+          _cameraSnapshot.copyWith(
+            state: value.copyWith(description: nextDescription),
+            textureId: switchResult.textureId,
+            previewSize: switchResult.previewSize,
+          ),
+        );
+      }
     } on CameraException catch (error) {
-      _setValueSafely(
-        previous.copyWith(state: _stateWithError(previous.state, error)),
-      );
+      if (value is CameraSwitchingState) {
+        _setValueSafely(
+          previous.copyWith(state: _stateWithError(previous.state, error)),
+        );
+      }
       rethrow;
     }
   }
@@ -330,17 +389,29 @@ class CameraController extends ValueNotifier<CameraState> {
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
-      _setValueSafely(
-        _cameraSnapshot.copyWith(
-          state: _cameraPausedState(description: nextDescription),
-          textureId: switchResult.textureId,
-          previewSize: switchResult.previewSize,
-        ),
-      );
+      if (value is CameraSwitchingState) {
+        _setValueSafely(
+          _cameraSnapshot.copyWith(
+            state: _cameraPausedState(description: nextDescription),
+            textureId: switchResult.textureId,
+            previewSize: switchResult.previewSize,
+          ),
+        );
+      } else {
+        _setValueSafely(
+          _cameraSnapshot.copyWith(
+            state: value.copyWith(description: nextDescription),
+            textureId: switchResult.textureId,
+            previewSize: switchResult.previewSize,
+          ),
+        );
+      }
     } on CameraException catch (error) {
-      _setValueSafely(
-        previous.copyWith(state: _stateWithError(previous.state, error)),
-      );
+      if (value is CameraSwitchingState) {
+        _setValueSafely(
+          previous.copyWith(state: _stateWithError(previous.state, error)),
+        );
+      }
       rethrow;
     }
   }
@@ -410,6 +481,8 @@ class CameraController extends ValueNotifier<CameraState> {
     final currentCameraId = cameraId;
     await _recordingStateSubscription?.cancel();
     _recordingStateSubscription = null;
+    await _audioDeviceSubscription?.cancel();
+    _audioDeviceSubscription = null;
 
     if (currentCameraId != null) {
       await _platform.disposeCamera(currentCameraId);
@@ -482,6 +555,7 @@ class CameraController extends ValueNotifier<CameraState> {
       final cameraId = await _platform.createCamera(description, config);
       final initializationResult = await _platform.initializeCamera(cameraId);
       await _subscribeToRecordingState(cameraId);
+      await _subscribeToAudioDeviceChanged(cameraId);
 
       _setValueSafely(
         _cameraSnapshot.copyWith(
@@ -562,6 +636,13 @@ class CameraController extends ValueNotifier<CameraState> {
     _recordingStateSubscription = _platform
         .onRecordingStateChanged(cameraId)
         .listen(_handleRecordingState);
+  }
+
+  Future<void> _subscribeToAudioDeviceChanged(int cameraId) async {
+    await _audioDeviceSubscription?.cancel();
+    _audioDeviceSubscription = _platform
+        .onAudioDeviceChanged(cameraId)
+        .listen(_audioDeviceChangedController.add);
   }
 
   void _handleRecordingState(RecordingState state) {
@@ -710,6 +791,14 @@ class CameraController extends ValueNotifier<CameraState> {
       unawaited(subscription.cancel());
     }
     _recordingStateSubscription = null;
+
+    final audioSubscription = _audioDeviceSubscription;
+    if (audioSubscription != null) {
+      unawaited(audioSubscription.cancel());
+    }
+    _audioDeviceSubscription = null;
+    unawaited(_audioDeviceChangedController.close());
+
     final currentCameraId = cameraId;
     if (currentCameraId != null) {
       unawaited(_platform.disposeCamera(currentCameraId));

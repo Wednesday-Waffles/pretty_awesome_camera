@@ -60,6 +60,11 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
+  Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
+    return const Stream<AudioDeviceChangedEvent>.empty();
+  }
+
+  @override
   Future<bool> canSwitchCamera(int cameraId) async => true;
 
   @override
