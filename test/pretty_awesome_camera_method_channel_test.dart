@@ -430,6 +430,7 @@ void main() {
       final stream = platform.onAudioDeviceChanged(0);
       final event = await stream.first;
       expect(event, isA<AudioDeviceChangedEvent>());
+      expect(event.event, 'route_change');
       expect(event.deviceName, 'Apple AirPods');
       expect(event.portType, 'BluetoothHFP');
       expect(event.isBluetooth, true);
