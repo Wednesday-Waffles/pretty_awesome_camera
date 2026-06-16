@@ -35,6 +35,9 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
   Future<void> resumeRecording(int cameraId) async {}
 
   @override
+  Future<double> setZoom(int cameraId, double zoomFactor) async => zoomFactor;
+
+  @override
   Future<void> disposeCamera(int cameraId) async {}
 
   @override
@@ -91,9 +94,7 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('uses the current layout ratio by default', (
-    tester,
-  ) async {
+  testWidgets('uses the current layout ratio by default', (tester) async {
     await tester.pumpWidget(
       Directionality(
         textDirection: TextDirection.ltr,
@@ -118,15 +119,14 @@ void main() {
         child: SizedBox(
           width: 300,
           height: 600,
-          child: CameraPreview(
-            controller: controller,
-            aspectRatio: 9 / 16,
-          ),
+          child: CameraPreview(controller: controller, aspectRatio: 9 / 16),
         ),
       ),
     );
 
-    final outerAspectRatio = tester.widget<AspectRatio>(find.byType(AspectRatio));
+    final outerAspectRatio = tester.widget<AspectRatio>(
+      find.byType(AspectRatio),
+    );
 
     expect(outerAspectRatio.aspectRatio, closeTo(9 / 16, 0.0001));
     expect(find.byType(OverflowBox), findsOneWidget);

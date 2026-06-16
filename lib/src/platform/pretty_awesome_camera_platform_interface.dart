@@ -74,6 +74,14 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError('resumeRecording() has not been implemented.');
   }
 
+  /// Sets the video zoom factor for the camera with the given ID.
+  ///
+  /// Platform implementations clamp the requested factor to the active
+  /// camera device's supported zoom range.
+  Future<double> setZoom(int cameraId, double zoomFactor) {
+    throw UnimplementedError('setZoom() has not been implemented.');
+  }
+
   /// Disposes the camera with the given ID, freeing resources.
   Future<void> disposeCamera(int cameraId) {
     throw UnimplementedError('disposeCamera() has not been implemented.');

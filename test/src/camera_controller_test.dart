@@ -11,6 +11,8 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   int nextCameraId = 1;
   int nextTextureId = 101;
+  int? lastZoomCameraId;
+  double? lastZoomFactor;
   String stopRecordingPath = '/tmp/test.mov';
   CameraPreviewSize previewSize = const CameraPreviewSize(
     width: 1440,
@@ -50,6 +52,13 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<void> resumeRecording(int cameraId) async {}
+
+  @override
+  Future<double> setZoom(int cameraId, double zoomFactor) async {
+    lastZoomCameraId = cameraId;
+    lastZoomFactor = zoomFactor;
+    return zoomFactor;
+  }
 
   @override
   Future<void> disposeCamera(int cameraId) async {}
@@ -158,15 +167,18 @@ void main() {
     expect(controller.value, isA<CameraUninitializedState>());
   });
 
-  test('create falls back to front camera when config lensDirection is null', () async {
-    final controller = await CameraController.create(
-      config: const CameraConfig(lensDirection: null),
-      platform: platform,
-    );
+  test(
+    'create falls back to front camera when config lensDirection is null',
+    () async {
+      final controller = await CameraController.create(
+        config: const CameraConfig(lensDirection: null),
+        platform: platform,
+      );
 
-    expect(controller.description.lensDirection, LensDirection.front);
-    expect(controller.value, isA<CameraUninitializedState>());
-  });
+      expect(controller.description.lensDirection, LensDirection.front);
+      expect(controller.value, isA<CameraUninitializedState>());
+    },
+  );
 
   test('preloadAvailableCameras caches discovery for later prewarm', () async {
     final cached = await CameraController.preloadAvailableCameras(
@@ -299,6 +311,37 @@ void main() {
 
     expect(controller.value, isA<CameraReadyState>());
     expect(controller.description.lensDirection, LensDirection.front);
+  });
+
+  test('setZoom delegates to the active platform camera', () async {
+    final controller = CameraController(
+      description: description,
+      platform: platform,
+    );
+
+    await controller.prewarmUp();
+    final appliedZoom = await controller.setZoom(2.5);
+
+    expect(platform.lastZoomCameraId, controller.cameraId);
+    expect(platform.lastZoomFactor, 2.5);
+    expect(appliedZoom, 2.5);
+  });
+
+  test('setZoom after dispose throws disposed before platform call', () async {
+    final controller = CameraController(
+      description: description,
+      platform: platform,
+    );
+
+    await controller.prewarmUp();
+    controller.dispose();
+
+    expect(
+      () => controller.setZoom(2.5),
+      throwsA(isA<CameraException>().having((e) => e.code, 'code', 'disposed')),
+    );
+    expect(platform.lastZoomCameraId, isNull);
+    expect(platform.lastZoomFactor, isNull);
   });
 
   test('invalid transition throws camera exception', () async {
