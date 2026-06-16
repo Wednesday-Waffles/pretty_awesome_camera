@@ -1069,6 +1069,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     return
                 }
                 captureSession.addInput(videoInput)
+                let previousZoomFactor = cameraInstance.zoomFactor
                 do {
                     cameraInstance.zoomFactor = try applyZoomFactor(cameraInstance.zoomFactor, to: device)
                 } catch {
@@ -1087,6 +1088,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     for input in existingVideoInputs where captureSession.canAddInput(input) {
                         captureSession.addInput(input)
                     }
+                    cameraInstance.zoomFactor = previousZoomFactor
                     captureSession.commitConfiguration()
                     switchError = FlutterError(code: "SWITCH_UNSUPPORTED", message: "New camera does not support the active recording configuration", details: nil)
                     return

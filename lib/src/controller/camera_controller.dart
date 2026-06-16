@@ -255,6 +255,7 @@ class CameraController extends ValueNotifier<CameraState> {
   }
 
   Future<double> setZoom(double zoomFactor) {
+    _assertNotDisposed('setZoom');
     _assertInitialized('setZoom');
     return _platform.setZoom(cameraId!, zoomFactor);
   }
@@ -699,7 +700,7 @@ class CameraController extends ValueNotifier<CameraState> {
   }
 
   void _assertNotDisposed(String method) {
-    if (_cameraSnapshot.isDisposed) {
+    if (_isControllerDisposed || _cameraSnapshot.isDisposed) {
       throw CameraException(
         code: 'disposed',
         message: 'Cannot call $method after the controller is disposed.',

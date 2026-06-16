@@ -327,6 +327,23 @@ void main() {
     expect(appliedZoom, 2.5);
   });
 
+  test('setZoom after dispose throws disposed before platform call', () async {
+    final controller = CameraController(
+      description: description,
+      platform: platform,
+    );
+
+    await controller.prewarmUp();
+    controller.dispose();
+
+    expect(
+      () => controller.setZoom(2.5),
+      throwsA(isA<CameraException>().having((e) => e.code, 'code', 'disposed')),
+    );
+    expect(platform.lastZoomCameraId, isNull);
+    expect(platform.lastZoomFactor, isNull);
+  });
+
   test('invalid transition throws camera exception', () async {
     final controller = CameraController(
       description: description,
