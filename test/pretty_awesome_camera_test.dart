@@ -44,6 +44,11 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
+  Future<void> setZoom(int cameraId, double zoomFactor) {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<void> disposeCamera(int cameraId) {
     throw UnimplementedError();
   }
@@ -117,6 +122,11 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<void> resumeRecording(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<void> setZoom(int cameraId, double zoomFactor) {
     throw UnimplementedError();
   }
 
@@ -226,6 +236,13 @@ void main() {
     test('resumeRecording throws UnimplementedError', () {
       expect(
         () => platform.resumeRecording(0),
+        throwsA(isA<UnimplementedError>()),
+      );
+    });
+
+    test('setZoom throws UnimplementedError', () {
+      expect(
+        () => platform.setZoom(0, 2.0),
         throwsA(isA<UnimplementedError>()),
       );
     });

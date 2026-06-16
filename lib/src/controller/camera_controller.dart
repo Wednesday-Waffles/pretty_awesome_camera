@@ -28,7 +28,8 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<String?>? _stopRecordingFuture;
   Future<void>? _switchCameraFuture;
   StreamSubscription<AudioDeviceChangedEvent>? _audioDeviceSubscription;
-  final StreamController<AudioDeviceChangedEvent> _audioDeviceChangedController =
+  final StreamController<AudioDeviceChangedEvent>
+  _audioDeviceChangedController =
       StreamController<AudioDeviceChangedEvent>.broadcast();
 
   /// Stream of audio input device change events.
@@ -253,6 +254,11 @@ class CameraController extends ValueNotifier<CameraState> {
     }
   }
 
+  Future<void> setZoom(double zoomFactor) {
+    _assertInitialized('setZoom');
+    return _platform.setZoom(cameraId!, zoomFactor);
+  }
+
   Future<void> switchCamera() async {
     _assertNotDisposed('switchCamera');
 
@@ -275,7 +281,8 @@ class CameraController extends ValueNotifier<CameraState> {
       return;
     }
 
-    if (value is CameraStartingRecordingState || value is CameraStoppingRecordingState) {
+    if (value is CameraStartingRecordingState ||
+        value is CameraStoppingRecordingState) {
       throw CameraException(
         code: 'invalid_state',
         message: 'Cannot switch camera while starting or stopping recording.',
@@ -296,9 +303,7 @@ class CameraController extends ValueNotifier<CameraState> {
 
     if (value is CameraReadyState || value is CameraVideoRecordedState) {
       final previous = _cameraSnapshot;
-      _setValueSafely(
-        _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
-      );
+      _setValueSafely(_cameraSnapshot.copyWith(state: _cameraSwitchingState()));
 
       try {
         final switchResult = await _platform.switchCamera(cameraId!);
@@ -346,9 +351,7 @@ class CameraController extends ValueNotifier<CameraState> {
     CameraDescription nextDescription,
   ) async {
     final previous = _cameraSnapshot;
-    _setValueSafely(
-      _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
-    );
+    _setValueSafely(_cameraSnapshot.copyWith(state: _cameraSwitchingState()));
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
@@ -383,9 +386,7 @@ class CameraController extends ValueNotifier<CameraState> {
     CameraDescription nextDescription,
   ) async {
     final previous = _cameraSnapshot;
-    _setValueSafely(
-      _cameraSnapshot.copyWith(state: _cameraSwitchingState()),
-    );
+    _setValueSafely(_cameraSnapshot.copyWith(state: _cameraSwitchingState()));
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
@@ -460,9 +461,7 @@ class CameraController extends ValueNotifier<CameraState> {
       } else {
         // Recording stopped before any frames were captured.
         // Transition back to ready state.
-        _setValueSafely(
-          _cameraSnapshot.copyWith(state: _cameraReadyState()),
-        );
+        _setValueSafely(_cameraSnapshot.copyWith(state: _cameraReadyState()));
       }
       return filePath;
     } on CameraException catch (error) {

@@ -5,7 +5,8 @@ import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  MethodChannelPrettyAwesomeCamera platform = MethodChannelPrettyAwesomeCamera();
+  MethodChannelPrettyAwesomeCamera platform =
+      MethodChannelPrettyAwesomeCamera();
   const MethodChannel channel = MethodChannel('pretty_awesome_camera');
 
   setUp(() {
@@ -178,10 +179,7 @@ void main() {
             if (methodCall.method == 'initializeCamera') {
               return {
                 'textureId': 42,
-                'previewSize': {
-                  'width': 1440,
-                  'height': 1080,
-                },
+                'previewSize': {'width': 1440, 'height': 1080},
               };
             }
             return null;
@@ -345,6 +343,40 @@ void main() {
     });
   });
 
+  group('setZoom', () {
+    test('sends camera ID and zoom factor', () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            capturedCall = methodCall;
+            if (methodCall.method == 'setZoom') {
+              return null;
+            }
+            return null;
+          });
+
+      await platform.setZoom(7, 2.5);
+
+      expect(capturedCall?.method, 'setZoom');
+      expect(capturedCall?.arguments, {'cameraId': 7, 'zoom': 2.5});
+    });
+
+    test('throws CameraException on PlatformException', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            if (methodCall.method == 'setZoom') {
+              throw PlatformException(
+                code: 'zoom_error',
+                message: 'Failed to zoom',
+              );
+            }
+            return null;
+          });
+
+      expect(() => platform.setZoom(0, 2), throwsA(isA<CameraException>()));
+    });
+  });
+
   group('disposeCamera', () {
     test('completes successfully', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -386,11 +418,8 @@ void main() {
             MockStreamHandler.inline(
               onListen: (arguments, sink) {
                 sink.success('recording');
-                return null;
               },
-              onCancel: (arguments) {
-                return null;
-              },
+              onCancel: (arguments) {},
             ),
           );
 
@@ -419,11 +448,8 @@ void main() {
             MockStreamHandler.inline(
               onListen: (arguments, sink) {
                 sink.success(mockEvent);
-                return null;
               },
-              onCancel: (arguments) {
-                return null;
-              },
+              onCancel: (arguments) {},
             ),
           );
 

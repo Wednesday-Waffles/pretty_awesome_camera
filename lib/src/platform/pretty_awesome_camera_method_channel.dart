@@ -55,7 +55,10 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<int> createCamera(CameraDescription camera, CameraConfig config) async {
+  Future<int> createCamera(
+    CameraDescription camera,
+    CameraConfig config,
+  ) async {
     try {
       final cameraId = await methodChannel.invokeMethod<int>('createCamera', {
         'camera': camera.toJson(),
@@ -157,6 +160,21 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       throw CameraException(
         code: e.code,
         message: e.message ?? 'Failed to resume recording',
+      );
+    }
+  }
+
+  @override
+  Future<void> setZoom(int cameraId, double zoomFactor) async {
+    try {
+      await methodChannel.invokeMethod<void>('setZoom', {
+        'cameraId': cameraId,
+        'zoom': zoomFactor,
+      });
+    } on PlatformException catch (e) {
+      throw CameraException(
+        code: e.code,
+        message: e.message ?? 'Failed to set zoom',
       );
     }
   }

@@ -22,9 +22,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var previewTexture: CameraPreviewTexture?
         var textureId: Int64?
         var lensPosition: AVCaptureDevice.Position = .back
+        var videoInput: AVCaptureDeviceInput?
         var requestedPresetName: String = "high"
         var capturePreset: AVCaptureSession.Preset = .hd1280x720
         var captureDimensions: CMVideoDimensions = CMVideoDimensions(width: 1280, height: 720)
+        var zoomFactor: CGFloat = 1.0
         var recordingURL: URL?
         var assetWriter: AVAssetWriter?
         var videoWriterInput: AVAssetWriterInput?
@@ -242,6 +244,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             pauseRecording(call: call, result: result)
         case "resumeRecording":
             resumeRecording(call: call, result: result)
+        case "setZoom":
+            setZoom(call: call, result: result)
         case "stopRecording":
             stopRecording(call: call, result: result)
         case "getPlatformVersion":
@@ -359,6 +363,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let videoInput = try AVCaptureDeviceInput(device: device)
             if captureSession.canAddInput(videoInput) {
                 captureSession.addInput(videoInput)
+                cameraInstance.videoInput = videoInput
             }
             
             guard let audioDevice = AVCaptureDevice.default(for: .audio) else {
@@ -474,6 +479,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
         
         cameraInstance.captureSession?.stopRunning()
+        cameraInstance.videoInput = nil
         if let textureId = cameraInstance.textureId {
             textureRegistry?.unregisterTexture(textureId)
             cameraInstance.previewTexture?.textureRegistry = nil
@@ -898,6 +904,75 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
         }
     }
+
+    private func setZoom(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int,
+              let requestedZoom = args["zoom"] as? Double else {
+            result(FlutterError(code: "INVALID_ARGUMENTS", message: "Camera ID and zoom are required", details: nil))
+            return
+        }
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        sessionQueue.async { [weak self, weak cameraInstance] in
+            guard let self = self, let cameraInstance = cameraInstance else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "INVALID_CAMERA", message: "Camera no longer available", details: nil))
+                }
+                return
+            }
+
+            guard let device = self.currentVideoDevice(for: cameraInstance) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+                }
+                return
+            }
+
+            do {
+                let appliedZoom = try self.applyZoomFactor(CGFloat(requestedZoom), to: device)
+                cameraInstance.zoomFactor = appliedZoom
+                DispatchQueue.main.async {
+                    result(nil)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "ZOOM_ERROR", message: error.localizedDescription, details: nil))
+                }
+            }
+        }
+    }
+
+    private func currentVideoDevice(for cameraInstance: CameraInstance) -> AVCaptureDevice? {
+        if let device = cameraInstance.videoInput?.device {
+            return device
+        }
+
+        return cameraInstance.captureSession?.inputs
+            .compactMap { $0 as? AVCaptureDeviceInput }
+            .first { $0.device.hasMediaType(.video) }?
+            .device
+    }
+
+    private func applyZoomFactor(_ requestedZoom: CGFloat, to device: AVCaptureDevice) throws -> CGFloat {
+        let maximumZoomFactor = min(device.activeFormat.videoMaxZoomFactor, 8.0)
+        let safeZoomFactor = requestedZoom.isFinite ? requestedZoom : 1.0
+        let clampedZoomFactor = min(max(safeZoomFactor, 1.0), maximumZoomFactor)
+
+        try device.lockForConfiguration()
+        defer {
+            device.unlockForConfiguration()
+        }
+        device.videoZoomFactor = clampedZoomFactor
+        return clampedZoomFactor
+    }
     
     private func canSwitchCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
@@ -994,6 +1069,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     return
                 }
                 captureSession.addInput(videoInput)
+                do {
+                    cameraInstance.zoomFactor = try applyZoomFactor(cameraInstance.zoomFactor, to: device)
+                } catch {
+                    NSLog("%@", "Warning: Failed to apply zoom during camera switch: \(error.localizedDescription)")
+                }
 
                 let targetPreset: AVCaptureSession.Preset
                 if cameraInstance.isRecording {
@@ -1033,6 +1113,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
 
             cameraInstance.lensPosition = newPosition
+            cameraInstance.videoInput = videoInput
             
             if let textureId = cameraInstance.textureId {
                 result(cameraInitializationResult(textureId: textureId, captureDimensions: cameraInstance.captureDimensions))
