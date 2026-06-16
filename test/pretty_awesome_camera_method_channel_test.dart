@@ -350,15 +350,16 @@ void main() {
           .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
             capturedCall = methodCall;
             if (methodCall.method == 'setZoom') {
-              return null;
+              return 2.25;
             }
             return null;
           });
 
-      await platform.setZoom(7, 2.5);
+      final appliedZoom = await platform.setZoom(7, 2.5);
 
       expect(capturedCall?.method, 'setZoom');
       expect(capturedCall?.arguments, {'cameraId': 7, 'zoom': 2.5});
+      expect(appliedZoom, 2.25);
     });
 
     test('throws CameraException on PlatformException', () async {

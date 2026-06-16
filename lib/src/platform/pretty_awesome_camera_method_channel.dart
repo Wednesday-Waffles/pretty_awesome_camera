@@ -165,12 +165,19 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<void> setZoom(int cameraId, double zoomFactor) async {
+  Future<double> setZoom(int cameraId, double zoomFactor) async {
     try {
-      await methodChannel.invokeMethod<void>('setZoom', {
+      final appliedZoom = await methodChannel.invokeMethod<double>('setZoom', {
         'cameraId': cameraId,
         'zoom': zoomFactor,
       });
+      if (appliedZoom == null) {
+        throw CameraException(
+          code: 'invalid_response',
+          message: 'Platform returned null zoom factor',
+        );
+      }
+      return appliedZoom;
     } on PlatformException catch (e) {
       throw CameraException(
         code: e.code,

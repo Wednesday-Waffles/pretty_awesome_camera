@@ -35,7 +35,7 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
   Future<void> resumeRecording(int cameraId) async {}
 
   @override
-  Future<void> setZoom(int cameraId, double zoomFactor) async {}
+  Future<double> setZoom(int cameraId, double zoomFactor) async => zoomFactor;
 
   @override
   Future<void> disposeCamera(int cameraId) async {}

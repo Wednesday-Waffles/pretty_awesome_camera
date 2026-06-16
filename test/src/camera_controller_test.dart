@@ -54,9 +54,10 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   Future<void> resumeRecording(int cameraId) async {}
 
   @override
-  Future<void> setZoom(int cameraId, double zoomFactor) async {
+  Future<double> setZoom(int cameraId, double zoomFactor) async {
     lastZoomCameraId = cameraId;
     lastZoomFactor = zoomFactor;
+    return zoomFactor;
   }
 
   @override
@@ -319,10 +320,11 @@ void main() {
     );
 
     await controller.prewarmUp();
-    await controller.setZoom(2.5);
+    final appliedZoom = await controller.setZoom(2.5);
 
     expect(platform.lastZoomCameraId, controller.cameraId);
     expect(platform.lastZoomFactor, 2.5);
+    expect(appliedZoom, 2.5);
   });
 
   test('invalid transition throws camera exception', () async {

@@ -44,7 +44,7 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
-  Future<void> setZoom(int cameraId, double zoomFactor) {
+  Future<double> setZoom(int cameraId, double zoomFactor) {
     throw UnimplementedError();
   }
 
@@ -126,7 +126,7 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<void> setZoom(int cameraId, double zoomFactor) {
+  Future<double> setZoom(int cameraId, double zoomFactor) {
     throw UnimplementedError();
   }
 

@@ -78,7 +78,7 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
   ///
   /// Platform implementations clamp the requested factor to the active
   /// camera device's supported zoom range.
-  Future<void> setZoom(int cameraId, double zoomFactor) {
+  Future<double> setZoom(int cameraId, double zoomFactor) {
     throw UnimplementedError('setZoom() has not been implemented.');
   }
 

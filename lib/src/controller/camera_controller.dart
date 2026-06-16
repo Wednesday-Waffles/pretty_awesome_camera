@@ -254,7 +254,7 @@ class CameraController extends ValueNotifier<CameraState> {
     }
   }
 
-  Future<void> setZoom(double zoomFactor) {
+  Future<double> setZoom(double zoomFactor) {
     _assertInitialized('setZoom');
     return _platform.setZoom(cameraId!, zoomFactor);
   }

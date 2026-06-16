@@ -940,7 +940,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let appliedZoom = try self.applyZoomFactor(CGFloat(requestedZoom), to: device)
                 cameraInstance.zoomFactor = appliedZoom
                 DispatchQueue.main.async {
-                    result(nil)
+                    result(Double(appliedZoom))
                 }
             } catch {
                 DispatchQueue.main.async {
