@@ -7,10 +7,12 @@ void main() {
       const exception = CameraException(
         code: 'test_error',
         message: 'Test error message',
+        details: {'native_stop_stage': 'finish_writing'},
       );
 
       expect(exception.code, 'test_error');
       expect(exception.message, 'Test error message');
+      expect(exception.details, {'native_stop_stage': 'finish_writing'});
     });
 
     test('toString returns formatted string', () {
@@ -22,6 +24,19 @@ void main() {
       expect(
         exception.toString(),
         'CameraException(code: test_error, message: Test error message)',
+      );
+    });
+
+    test('toString includes details when present', () {
+      const exception = CameraException(
+        code: 'test_error',
+        message: 'Test error message',
+        details: {'native_stop_stage': 'finish_writing'},
+      );
+
+      expect(
+        exception.toString(),
+        'CameraException(code: test_error, message: Test error message, details: {native_stop_stage: finish_writing})',
       );
     });
 
@@ -43,6 +58,21 @@ void main() {
       test('two exceptions with different message are not equal', () {
         const exception1 = CameraException(code: 'error', message: 'message1');
         const exception2 = CameraException(code: 'error', message: 'message2');
+
+        expect(exception1, isNot(exception2));
+      });
+
+      test('two exceptions with different details are not equal', () {
+        const exception1 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {'native_stop_stage': 'finish_writing'},
+        );
+        const exception2 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {'native_stop_stage': 'writer_failed'},
+        );
 
         expect(exception1, isNot(exception2));
       });

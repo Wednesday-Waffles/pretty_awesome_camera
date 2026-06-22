@@ -22,6 +22,22 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   /// The switching capability detector instance.
   late final SwitchingCapability _switchingCapability = SwitchingCapability();
 
+  CameraException _cameraExceptionFromPlatformException(
+    PlatformException exception,
+    String fallbackMessage,
+  ) {
+    final nativeDetails = exception.details;
+    return CameraException(
+      code: exception.code,
+      message: exception.message ?? fallbackMessage,
+      details: nativeDetails is Map
+          ? nativeDetails.map(
+              (key, value) => MapEntry(key.toString(), value as Object?),
+            )
+          : null,
+    );
+  }
+
   @override
   Future<String?> getPlatformVersion() async {
     final version = await methodChannel.invokeMethod<String>(
@@ -47,9 +63,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
           )
           .toList();
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to get available cameras',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to get available cameras',
       );
     }
   }
@@ -72,10 +88,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       }
       return cameraId;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to create camera',
-      );
+      throw _cameraExceptionFromPlatformException(e, 'Failed to create camera');
     }
   }
 
@@ -99,9 +112,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         Map<dynamic, dynamic>.from(result as Map),
       );
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to initialize camera',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to initialize camera',
       );
     }
   }
@@ -113,9 +126,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         'cameraId': cameraId,
       });
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to start recording',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to start recording',
       );
     }
   }
@@ -129,9 +142,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       );
       return filePath;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to stop recording',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to stop recording',
       );
     }
   }
@@ -143,9 +156,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         'cameraId': cameraId,
       });
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to pause recording',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to pause recording',
       );
     }
   }
@@ -157,9 +170,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         'cameraId': cameraId,
       });
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to resume recording',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to resume recording',
       );
     }
   }
@@ -179,10 +192,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       }
       return appliedZoom;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to set zoom',
-      );
+      throw _cameraExceptionFromPlatformException(e, 'Failed to set zoom');
     }
   }
 
@@ -193,9 +203,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         'cameraId': cameraId,
       });
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to dispose camera',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to dispose camera',
       );
     }
   }
@@ -245,9 +255,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       );
       return canSwitch ?? false;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to check if camera can switch',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to check if camera can switch',
       );
     }
   }
@@ -271,10 +281,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         Map<dynamic, dynamic>.from(result as Map),
       );
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to switch camera',
-      );
+      throw _cameraExceptionFromPlatformException(e, 'Failed to switch camera');
     }
   }
 
@@ -286,9 +293,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       );
       return canSwitch ?? false;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to check if current camera can switch',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to check if current camera can switch',
       );
     }
   }
@@ -301,9 +308,9 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       );
       return supported ?? false;
     } on PlatformException catch (e) {
-      throw CameraException(
-        code: e.code,
-        message: e.message ?? 'Failed to detect MultiCam support',
+      throw _cameraExceptionFromPlatformException(
+        e,
+        'Failed to detect MultiCam support',
       );
     }
   }
