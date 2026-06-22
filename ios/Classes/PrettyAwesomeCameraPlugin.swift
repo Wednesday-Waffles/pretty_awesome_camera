@@ -4,6 +4,10 @@ import AVFoundation
 import os.lock
 
 public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
+    static let stableRecordingAudioSampleRate: Double = 44100
+    static let stableRecordingAudioChannelCount: UInt32 = 1
+    static let stableRecordingAudioBitRate: Int = 128000
+
     private var cameras: [Int: CameraInstance] = [:]
     private var nextCameraId = 0
     private var textureRegistry: FlutterTextureRegistry?
@@ -528,6 +532,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         isAudioSessionConfigured = true
     }
 
+    static func recordingAudioSettings() -> [String: Any] {
+        return [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: stableRecordingAudioSampleRate,
+            AVNumberOfChannelsKey: Int(stableRecordingAudioChannelCount),
+            AVEncoderBitRateKey: stableRecordingAudioBitRate
+        ]
+    }
+
     private func currentAudioRouteEvent(event: String) -> [String: Any] {
         let audioSession = AVAudioSession.sharedInstance()
         let currentRoute = audioSession.currentRoute
@@ -734,12 +747,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
                 videoWriterInput.expectsMediaDataInRealTime = true
                 
-                let audioSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: cameraInstance.actualAudioSampleRate,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: cameraInstance.actualAudioSampleRate >= 44100 ? 128000 : 64000
-                ]
+                let audioSettings = Self.recordingAudioSettings()
                 let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
                 audioWriterInput.expectsMediaDataInRealTime = true
                 
@@ -781,8 +789,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.isFirstAudioFrame = true
                 cameraInstance.sessionStartTime = .zero
                 cameraInstance.recordingWarmupFramesRemaining = 3
-                cameraInstance.recordingAudioSampleRate = cameraInstance.actualAudioSampleRate
-                cameraInstance.recordingAudioChannelCount = 1
+                // Keep the AAC writer on a stable, broadly supported shape.
+                // Bluetooth HFP may deliver 8/16 kHz PCM; those buffers are
+                // resampled into this target instead of reconfiguring the
+                // writer around a fragile route-specific format.
+                cameraInstance.recordingAudioSampleRate = Self.stableRecordingAudioSampleRate
+                cameraInstance.recordingAudioChannelCount = Self.stableRecordingAudioChannelCount
 
                 // Diagnostics-only counters reset for the new recording.
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
@@ -1413,12 +1425,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoWriterInput.expectsMediaDataInRealTime = true
 
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: cameraInstance.actualAudioSampleRate,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: cameraInstance.actualAudioSampleRate >= 44100 ? 128000 : 64000
-            ]
+            let audioSettings = Self.recordingAudioSettings()
             let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             audioWriterInput.expectsMediaDataInRealTime = true
 
