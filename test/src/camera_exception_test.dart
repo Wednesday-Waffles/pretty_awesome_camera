@@ -92,6 +92,29 @@ void main() {
         expect(exception1.hashCode, exception2.hashCode);
       });
 
+      test('equal details maps have same hashCode regardless of order', () {
+        const exception1 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {
+            'native_stop_stage': 'finish_writing',
+            'native_error_code': -11800,
+          },
+        );
+        const exception2 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {
+            'native_error_code': -11800,
+            'native_stop_stage': 'finish_writing',
+          },
+        );
+
+        expect(exception1, exception2);
+        expect(exception1.hashCode, exception2.hashCode);
+        expect({exception1}, contains(exception2));
+      });
+
       test('different exceptions likely have different hashCode', () {
         const exception1 = CameraException(code: 'error1', message: 'message1');
         const exception2 = CameraException(code: 'error2', message: 'message2');

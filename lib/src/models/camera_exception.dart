@@ -45,7 +45,7 @@ class CameraException implements Exception {
     message,
     details == null
         ? null
-        : Object.hashAll(
+        : Object.hashAllUnordered(
             details!.entries.map(
               (entry) => Object.hash(entry.key, entry.value),
             ),
