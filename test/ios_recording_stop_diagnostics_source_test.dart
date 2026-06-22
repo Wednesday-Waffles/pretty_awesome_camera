@@ -36,12 +36,14 @@ void main() {
         finishStopSource,
         contains('audioConverterInputFormat: audioConverterInputFormat'),
       );
+      expect(source, contains('"native_audio_converter_input_sample_rate"'));
+      expect(source, contains('"native_audio_converter_input_channel_count"'));
       expect(source, contains('"native_audio_conv_rate"'));
       expect(source, contains('"native_audio_conv_chans"'));
+      expect(source, contains('"native_underlying_error_domain"'));
+      expect(source, contains('"native_underlying_error_code"'));
       expect(source, contains('"native_under_err_domain"'));
       expect(source, contains('"native_under_err_code"'));
-      expect(source, isNot(contains('native_audio_converter_input_')));
-      expect(source, isNot(contains('native_underlying_error_')));
     });
   });
 }

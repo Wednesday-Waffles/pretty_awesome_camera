@@ -647,14 +647,20 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
 
         if let effectiveAudioConverterInputFormat {
-            details["native_audio_conv_rate"] = effectiveAudioConverterInputFormat.sampleRate
-            details["native_audio_conv_chans"] = Int(effectiveAudioConverterInputFormat.channelCount)
+            let inputSampleRate = effectiveAudioConverterInputFormat.sampleRate
+            let inputChannelCount = Int(effectiveAudioConverterInputFormat.channelCount)
+            details["native_audio_converter_input_sample_rate"] = inputSampleRate
+            details["native_audio_converter_input_channel_count"] = inputChannelCount
+            details["native_audio_conv_rate"] = inputSampleRate
+            details["native_audio_conv_chans"] = inputChannelCount
         }
 
         if let nsError = error as NSError? {
             details["native_error_domain"] = nsError.domain
             details["native_error_code"] = nsError.code
             if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+                details["native_underlying_error_domain"] = underlying.domain
+                details["native_underlying_error_code"] = underlying.code
                 details["native_under_err_domain"] = underlying.domain
                 details["native_under_err_code"] = underlying.code
             }
