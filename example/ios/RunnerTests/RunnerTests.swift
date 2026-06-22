@@ -27,6 +27,33 @@ class RunnerTests: XCTestCase {
 
 }
 
+final class RecordingAudioSettingsTests: XCTestCase {
+
+  func testRecordingAudioSettingsUseStableAacShape() throws {
+    let settings = PrettyAwesomeCameraPlugin.recordingAudioSettings()
+
+    XCTAssertEqual(settings[AVFormatIDKey] as? AudioFormatID, kAudioFormatMPEG4AAC)
+    XCTAssertEqual(settings[AVSampleRateKey] as? Double, 44100)
+    XCTAssertEqual(settings[AVNumberOfChannelsKey] as? Int, 1)
+    XCTAssertEqual(settings[AVEncoderBitRateKey] as? Int, 128000)
+  }
+
+  func testStableRecordingAudioSettingsCanBeAddedToAssetWriter() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("stable_audio_settings_\(UUID().uuidString).mov")
+    try? FileManager.default.removeItem(at: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let writer = try AVAssetWriter(url: url, fileType: .mov)
+    let input = AVAssetWriterInput(
+      mediaType: .audio,
+      outputSettings: PrettyAwesomeCameraPlugin.recordingAudioSettings()
+    )
+
+    XCTAssertTrue(writer.canAdd(input))
+  }
+}
+
 // MARK: - AVAssetWriter audio-gap behavior probe
 //
 // PURPOSE

@@ -4,6 +4,10 @@ import AVFoundation
 import os.lock
 
 public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
+    static let stableRecordingAudioSampleRate: Double = 44100
+    static let stableRecordingAudioChannelCount: UInt32 = 1
+    static let stableRecordingAudioBitRate: Int = 128000
+
     private var cameras: [Int: CameraInstance] = [:]
     private var nextCameraId = 0
     private var textureRegistry: FlutterTextureRegistry?
@@ -528,6 +532,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         isAudioSessionConfigured = true
     }
 
+    static func recordingAudioSettings() -> [String: Any] {
+        return [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: stableRecordingAudioSampleRate,
+            AVNumberOfChannelsKey: Int(stableRecordingAudioChannelCount),
+            AVEncoderBitRateKey: stableRecordingAudioBitRate
+        ]
+    }
+
     private func currentAudioRouteEvent(event: String) -> [String: Any] {
         let audioSession = AVAudioSession.sharedInstance()
         let currentRoute = audioSession.currentRoute
@@ -535,7 +548,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         let deviceName = activeInput?.portName ?? "iPhone Microphone"
         let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
         let hasBluetoothInput = currentRoute.inputs.contains { port in
-            port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+            Self.isBluetoothPort(port.portType)
         }
 
         return [
@@ -544,6 +557,135 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             "portType": portType,
             "isBluetooth": hasBluetoothInput
         ]
+    }
+
+    static func isBluetoothPort(_ portType: AVAudioSession.Port) -> Bool {
+        return portType == .bluetoothHFP ||
+            portType == .bluetoothA2DP ||
+            portType == .bluetoothLE
+    }
+
+    private func assetWriterStatusName(_ status: AVAssetWriter.Status) -> String {
+        switch status {
+        case .unknown:
+            return "unknown"
+        case .writing:
+            return "writing"
+        case .completed:
+            return "completed"
+        case .failed:
+            return "failed"
+        case .cancelled:
+            return "cancelled"
+        @unknown default:
+            return "unknown_\(status.rawValue)"
+        }
+    }
+
+    private func recordingStopErrorDetails(
+        cameraInstance: CameraInstance,
+        stage: String,
+        assetWriter: AVAssetWriter? = nil,
+        error: Error? = nil,
+        wasPaused: Bool? = nil,
+        sessionStarted: Bool? = nil,
+        warmupFramesRemaining: Int? = nil,
+        isFirstVideoFrame: Bool? = nil,
+        isFirstAudioFrame: Bool? = nil
+    ) -> [String: Any] {
+        let audioSession = AVAudioSession.sharedInstance()
+        let currentRoute = audioSession.currentRoute
+        let activeInput = currentRoute.inputs.first
+        let hasBluetoothInput = currentRoute.inputs.contains { port in
+            Self.isBluetoothPort(port.portType)
+        }
+
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+        let lockedWasPaused = cameraInstance._isPaused
+        let lockedSessionStarted = cameraInstance._sessionStartTime != .zero
+        let lockedWarmupFramesRemaining = cameraInstance._recordingWarmupFramesRemaining
+        let lockedIsFirstVideoFrame = cameraInstance._isFirstVideoFrame
+        let lockedIsFirstAudioFrame = cameraInstance._isFirstAudioFrame
+        let audioRouteSwitchCount = cameraInstance._audioRouteSwitchCount
+        let hasPrewarmedRecordingPipeline = cameraInstance._hasPrewarmedRecordingPipeline
+        let hasAudioConverter = cameraInstance.audioConverter != nil
+        let audioConverterInputFormat = cameraInstance.audioConverterInputFormat
+        let actualAudioSampleRate = cameraInstance.actualAudioSampleRate
+        let recordingAudioSampleRate = cameraInstance.recordingAudioSampleRate
+        let recordingAudioChannelCount = cameraInstance.recordingAudioChannelCount
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        var details: [String: Any] = [
+            "native_stop_stage": stage,
+            "native_audio_port_type": activeInput?.portType.rawValue ?? "none",
+            "native_is_bluetooth_input": hasBluetoothInput,
+            "native_actual_audio_sample_rate": actualAudioSampleRate,
+            "native_recording_audio_sample_rate": recordingAudioSampleRate,
+            "native_recording_audio_channel_count": Int(recordingAudioChannelCount),
+            "native_recording_audio_bit_rate": Self.stableRecordingAudioBitRate,
+            "native_audio_route_switch_count": audioRouteSwitchCount,
+            "native_has_audio_converter": hasAudioConverter,
+            "native_was_paused": wasPaused ?? lockedWasPaused,
+            "native_session_started": sessionStarted ?? lockedSessionStarted,
+            "native_warmup_frames_remaining": warmupFramesRemaining ?? lockedWarmupFramesRemaining,
+            "native_is_first_video_frame": isFirstVideoFrame ?? lockedIsFirstVideoFrame,
+            "native_is_first_audio_frame": isFirstAudioFrame ?? lockedIsFirstAudioFrame,
+            "native_has_prewarmed_recording_pipeline": hasPrewarmedRecordingPipeline,
+            "native_capture_preset": cameraInstance.capturePreset.rawValue,
+            "native_capture_width": Int(cameraInstance.captureDimensions.width),
+            "native_capture_height": Int(cameraInstance.captureDimensions.height)
+        ]
+
+        if let assetWriter {
+            details["native_writer_status"] = assetWriterStatusName(assetWriter.status)
+            details["native_writer_status_code"] = assetWriter.status.rawValue
+        }
+
+        if let audioConverterInputFormat {
+            details["native_audio_converter_input_sample_rate"] = audioConverterInputFormat.sampleRate
+            details["native_audio_converter_input_channel_count"] = Int(audioConverterInputFormat.channelCount)
+        }
+
+        if let nsError = error as NSError? {
+            details["native_error_domain"] = nsError.domain
+            details["native_error_code"] = nsError.code
+            if let underlying = nsError.userInfo[NSUnderlyingErrorKey] as? NSError {
+                details["native_underlying_error_domain"] = underlying.domain
+                details["native_underlying_error_code"] = underlying.code
+            }
+        }
+
+        return details
+    }
+
+    private func stopRecordingFlutterError(
+        code: String,
+        message: String,
+        cameraInstance: CameraInstance,
+        stage: String,
+        assetWriter: AVAssetWriter? = nil,
+        error: Error? = nil,
+        wasPaused: Bool? = nil,
+        sessionStarted: Bool? = nil,
+        warmupFramesRemaining: Int? = nil,
+        isFirstVideoFrame: Bool? = nil,
+        isFirstAudioFrame: Bool? = nil
+    ) -> FlutterError {
+        return FlutterError(
+            code: code,
+            message: message,
+            details: recordingStopErrorDetails(
+                cameraInstance: cameraInstance,
+                stage: stage,
+                assetWriter: assetWriter,
+                error: error,
+                wasPaused: wasPaused,
+                sessionStarted: sessionStarted,
+                warmupFramesRemaining: warmupFramesRemaining,
+                isFirstVideoFrame: isFirstVideoFrame,
+                isFirstAudioFrame: isFirstAudioFrame
+            )
+        )
     }
 
     private func sendAudioEvent(_ eventData: [String: Any]) {
@@ -734,12 +876,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
                 videoWriterInput.expectsMediaDataInRealTime = true
                 
-                let audioSettings: [String: Any] = [
-                    AVFormatIDKey: kAudioFormatMPEG4AAC,
-                    AVSampleRateKey: cameraInstance.actualAudioSampleRate,
-                    AVNumberOfChannelsKey: 1,
-                    AVEncoderBitRateKey: cameraInstance.actualAudioSampleRate >= 44100 ? 128000 : 64000
-                ]
+                let audioSettings = Self.recordingAudioSettings()
                 let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
                 audioWriterInput.expectsMediaDataInRealTime = true
                 
@@ -781,8 +918,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.isFirstAudioFrame = true
                 cameraInstance.sessionStartTime = .zero
                 cameraInstance.recordingWarmupFramesRemaining = 3
-                cameraInstance.recordingAudioSampleRate = cameraInstance.actualAudioSampleRate
-                cameraInstance.recordingAudioChannelCount = 1
+                // Keep the AAC writer on a stable, broadly supported shape.
+                // Bluetooth HFP may deliver 8/16 kHz PCM; those buffers are
+                // resampled into this target instead of reconfiguring the
+                // writer around a fragile route-specific format.
+                cameraInstance.recordingAudioSampleRate = Self.stableRecordingAudioSampleRate
+                cameraInstance.recordingAudioChannelCount = Self.stableRecordingAudioChannelCount
 
                 // Diagnostics-only counters reset for the new recording.
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
@@ -1152,7 +1293,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
         os_unfair_lock_unlock(&stateLock)
         guard cameraInstance.isRecording else {
-            result(FlutterError(code: "NOT_RECORDING", message: "No active recording", details: nil))
+            result(stopRecordingFlutterError(
+                code: "NOT_RECORDING",
+                message: "No active recording",
+                cameraInstance: cameraInstance,
+                stage: "not_recording"
+            ))
             return
         }
         
@@ -1165,7 +1311,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         NSLog("%@", "PrettyAwesomeCameraPlugin: Stopped recording. Final active microphone: \(deviceName) (Type: \(portType))")
         
         guard let assetWriter = cameraInstance.assetWriter else {
-            result(FlutterError(code: "WRITER_ERROR", message: "No asset writer available", details: nil))
+            result(stopRecordingFlutterError(
+                code: "WRITER_ERROR",
+                message: "No asset writer available",
+                cameraInstance: cameraInstance,
+                stage: "no_asset_writer"
+            ))
             return
         }
         
@@ -1196,8 +1347,21 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                         if assetWriter.status == .completed {
                             result(recordingPath)
                         } else {
-                            let error = assetWriter.error?.localizedDescription ?? "Unknown error"
-                            result(FlutterError(code: "FINISH_ERROR", message: error, details: nil))
+                            let writerError = assetWriter.error
+                            let message = writerError?.localizedDescription ?? "Unknown error"
+                            result(self.stopRecordingFlutterError(
+                                code: "FINISH_ERROR",
+                                message: message,
+                                cameraInstance: cameraInstance,
+                                stage: "finish_writing",
+                                assetWriter: assetWriter,
+                                error: writerError,
+                                wasPaused: wasPaused,
+                                sessionStarted: sessionStarted,
+                                warmupFramesRemaining: warmupFramesRemaining,
+                                isFirstVideoFrame: isFirstVideoFrame,
+                                isFirstAudioFrame: isFirstAudioFrame
+                            ))
                         }
                     }
                 }
@@ -1217,7 +1381,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     result(nil)
                 }
             case .failed:
-                let error = assetWriter.error?.localizedDescription ?? "Unknown error"
+                let writerError = assetWriter.error
+                let message = writerError?.localizedDescription ?? "Unknown error"
                 if let url = cameraInstance.recordingURL {
                     try? FileManager.default.removeItem(at: url)
                 }
@@ -1226,11 +1391,35 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.audioWriterInput = nil
                 cameraInstance.recordingURL = nil
                 DispatchQueue.main.async {
-                    result(FlutterError(code: "WRITER_ERROR", message: error, details: nil))
+                    result(self.stopRecordingFlutterError(
+                        code: "WRITER_ERROR",
+                        message: message,
+                        cameraInstance: cameraInstance,
+                        stage: "writer_failed",
+                        assetWriter: assetWriter,
+                        error: writerError,
+                        wasPaused: wasPaused,
+                        sessionStarted: sessionStarted,
+                        warmupFramesRemaining: warmupFramesRemaining,
+                        isFirstVideoFrame: isFirstVideoFrame,
+                        isFirstAudioFrame: isFirstAudioFrame
+                    ))
                 }
             default:
                 DispatchQueue.main.async {
-                    result(FlutterError(code: "WRITER_ERROR", message: "Asset writer in unexpected state: \(assetWriter.status.rawValue)", details: nil))
+                    result(self.stopRecordingFlutterError(
+                        code: "WRITER_ERROR",
+                        message: "Asset writer in unexpected state: \(assetWriter.status.rawValue)",
+                        cameraInstance: cameraInstance,
+                        stage: "unexpected_writer_status",
+                        assetWriter: assetWriter,
+                        error: assetWriter.error,
+                        wasPaused: wasPaused,
+                        sessionStarted: sessionStarted,
+                        warmupFramesRemaining: warmupFramesRemaining,
+                        isFirstVideoFrame: isFirstVideoFrame,
+                        isFirstAudioFrame: isFirstAudioFrame
+                    ))
                 }
             }
         }
@@ -1413,12 +1602,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoWriterInput.expectsMediaDataInRealTime = true
 
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: cameraInstance.actualAudioSampleRate,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: cameraInstance.actualAudioSampleRate >= 44100 ? 128000 : 64000
-            ]
+            let audioSettings = Self.recordingAudioSettings()
             let audioWriterInput = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
             audioWriterInput.expectsMediaDataInRealTime = true
 
@@ -2016,7 +2200,7 @@ class AudioDeviceStreamHandler: NSObject, FlutterStreamHandler {
         let deviceName = activeInput?.portName ?? "iPhone Microphone"
         let portType = activeInput?.portType.rawValue ?? "MicrophoneBuiltIn"
         let hasBluetoothInput = currentRoute.inputs.contains { port in
-            port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+            PrettyAwesomeCameraPlugin.isBluetoothPort(port.portType)
         }
         
         events([

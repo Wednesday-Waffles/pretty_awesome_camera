@@ -7,10 +7,12 @@ void main() {
       const exception = CameraException(
         code: 'test_error',
         message: 'Test error message',
+        details: {'native_stop_stage': 'finish_writing'},
       );
 
       expect(exception.code, 'test_error');
       expect(exception.message, 'Test error message');
+      expect(exception.details, {'native_stop_stage': 'finish_writing'});
     });
 
     test('toString returns formatted string', () {
@@ -22,6 +24,19 @@ void main() {
       expect(
         exception.toString(),
         'CameraException(code: test_error, message: Test error message)',
+      );
+    });
+
+    test('toString includes details when present', () {
+      const exception = CameraException(
+        code: 'test_error',
+        message: 'Test error message',
+        details: {'native_stop_stage': 'finish_writing'},
+      );
+
+      expect(
+        exception.toString(),
+        'CameraException(code: test_error, message: Test error message, details: {native_stop_stage: finish_writing})',
       );
     });
 
@@ -47,6 +62,21 @@ void main() {
         expect(exception1, isNot(exception2));
       });
 
+      test('two exceptions with different details are not equal', () {
+        const exception1 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {'native_stop_stage': 'finish_writing'},
+        );
+        const exception2 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {'native_stop_stage': 'writer_failed'},
+        );
+
+        expect(exception1, isNot(exception2));
+      });
+
       test('exception equals itself', () {
         const exception = CameraException(code: 'error', message: 'message');
 
@@ -60,6 +90,29 @@ void main() {
         const exception2 = CameraException(code: 'error', message: 'message');
 
         expect(exception1.hashCode, exception2.hashCode);
+      });
+
+      test('equal details maps have same hashCode regardless of order', () {
+        const exception1 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {
+            'native_stop_stage': 'finish_writing',
+            'native_error_code': -11800,
+          },
+        );
+        const exception2 = CameraException(
+          code: 'error',
+          message: 'message',
+          details: {
+            'native_error_code': -11800,
+            'native_stop_stage': 'finish_writing',
+          },
+        );
+
+        expect(exception1, exception2);
+        expect(exception1.hashCode, exception2.hashCode);
+        expect({exception1}, contains(exception2));
       });
 
       test('different exceptions likely have different hashCode', () {

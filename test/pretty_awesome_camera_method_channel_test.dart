@@ -273,12 +273,38 @@ void main() {
               throw PlatformException(
                 code: 'stop_error',
                 message: 'Failed to stop recording',
+                details: {
+                  'native_stop_stage': 'finish_writing',
+                  'native_writer_status': 'failed',
+                  'native_error_code': -11800,
+                },
               );
             }
             return null;
           });
 
-      expect(() => platform.stopRecording(0), throwsA(isA<CameraException>()));
+      expect(
+        () => platform.stopRecording(0),
+        throwsA(
+          isA<CameraException>()
+              .having((error) => error.code, 'code', 'stop_error')
+              .having(
+                (error) => error.details,
+                'details',
+                containsPair('native_stop_stage', 'finish_writing'),
+              )
+              .having(
+                (error) => error.details,
+                'details',
+                containsPair('native_writer_status', 'failed'),
+              )
+              .having(
+                (error) => error.details,
+                'details',
+                containsPair('native_error_code', -11800),
+              ),
+        ),
+      );
     });
   });
 
