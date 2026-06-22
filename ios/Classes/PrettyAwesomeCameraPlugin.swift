@@ -587,6 +587,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         stage: String,
         assetWriter: AVAssetWriter? = nil,
         error: Error? = nil,
+        hasAudioConverter: Bool? = nil,
+        audioConverterInputFormat: AVAudioFormat? = nil,
         wasPaused: Bool? = nil,
         sessionStarted: Bool? = nil,
         warmupFramesRemaining: Int? = nil,
@@ -608,12 +610,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         let lockedIsFirstAudioFrame = cameraInstance._isFirstAudioFrame
         let audioRouteSwitchCount = cameraInstance._audioRouteSwitchCount
         let hasPrewarmedRecordingPipeline = cameraInstance._hasPrewarmedRecordingPipeline
-        let hasAudioConverter = cameraInstance.audioConverter != nil
-        let audioConverterInputFormat = cameraInstance.audioConverterInputFormat
+        let lockedHasAudioConverter = cameraInstance.audioConverter != nil
+        let lockedAudioConverterInputFormat = cameraInstance.audioConverterInputFormat
         let actualAudioSampleRate = cameraInstance.actualAudioSampleRate
         let recordingAudioSampleRate = cameraInstance.recordingAudioSampleRate
         let recordingAudioChannelCount = cameraInstance.recordingAudioChannelCount
         os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        let effectiveHasAudioConverter = hasAudioConverter ?? lockedHasAudioConverter
+        let effectiveAudioConverterInputFormat = audioConverterInputFormat ?? lockedAudioConverterInputFormat
 
         var details: [String: Any] = [
             "native_stop_stage": stage,
@@ -624,7 +629,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             "native_recording_audio_channel_count": Int(recordingAudioChannelCount),
             "native_recording_audio_bit_rate": Self.stableRecordingAudioBitRate,
             "native_audio_route_switch_count": audioRouteSwitchCount,
-            "native_has_audio_converter": hasAudioConverter,
+            "native_has_audio_converter": effectiveHasAudioConverter,
             "native_was_paused": wasPaused ?? lockedWasPaused,
             "native_session_started": sessionStarted ?? lockedSessionStarted,
             "native_warmup_frames_remaining": warmupFramesRemaining ?? lockedWarmupFramesRemaining,
@@ -641,9 +646,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             details["native_writer_status_code"] = assetWriter.status.rawValue
         }
 
-        if let audioConverterInputFormat {
-            details["native_audio_converter_input_sample_rate"] = audioConverterInputFormat.sampleRate
-            details["native_audio_converter_input_channel_count"] = Int(audioConverterInputFormat.channelCount)
+        if let effectiveAudioConverterInputFormat {
+            details["native_audio_converter_input_sample_rate"] = effectiveAudioConverterInputFormat.sampleRate
+            details["native_audio_converter_input_channel_count"] = Int(effectiveAudioConverterInputFormat.channelCount)
         }
 
         if let nsError = error as NSError? {
@@ -665,6 +670,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         stage: String,
         assetWriter: AVAssetWriter? = nil,
         error: Error? = nil,
+        hasAudioConverter: Bool? = nil,
+        audioConverterInputFormat: AVAudioFormat? = nil,
         wasPaused: Bool? = nil,
         sessionStarted: Bool? = nil,
         warmupFramesRemaining: Int? = nil,
@@ -679,6 +686,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 stage: stage,
                 assetWriter: assetWriter,
                 error: error,
+                hasAudioConverter: hasAudioConverter,
+                audioConverterInputFormat: audioConverterInputFormat,
                 wasPaused: wasPaused,
                 sessionStarted: sessionStarted,
                 warmupFramesRemaining: warmupFramesRemaining,
@@ -1329,6 +1338,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let warmupFramesRemaining = cameraInstance._recordingWarmupFramesRemaining
             let isFirstVideoFrame = cameraInstance._isFirstVideoFrame
             let isFirstAudioFrame = cameraInstance._isFirstAudioFrame
+            let hadAudioConverter = cameraInstance.audioConverter != nil
+            let audioConverterInputFormat = cameraInstance.audioConverterInputFormat
             cameraInstance._isRecording = false
             cameraInstance._isPaused = false
             cameraInstance.videoWriterInput = nil
@@ -1356,6 +1367,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                                 stage: "finish_writing",
                                 assetWriter: assetWriter,
                                 error: writerError,
+                                hasAudioConverter: hadAudioConverter,
+                                audioConverterInputFormat: audioConverterInputFormat,
                                 wasPaused: wasPaused,
                                 sessionStarted: sessionStarted,
                                 warmupFramesRemaining: warmupFramesRemaining,
@@ -1398,6 +1411,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                         stage: "writer_failed",
                         assetWriter: assetWriter,
                         error: writerError,
+                        hasAudioConverter: hadAudioConverter,
+                        audioConverterInputFormat: audioConverterInputFormat,
                         wasPaused: wasPaused,
                         sessionStarted: sessionStarted,
                         warmupFramesRemaining: warmupFramesRemaining,
@@ -1414,6 +1429,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                         stage: "unexpected_writer_status",
                         assetWriter: assetWriter,
                         error: assetWriter.error,
+                        hasAudioConverter: hadAudioConverter,
+                        audioConverterInputFormat: audioConverterInputFormat,
                         wasPaused: wasPaused,
                         sessionStarted: sessionStarted,
                         warmupFramesRemaining: warmupFramesRemaining,
