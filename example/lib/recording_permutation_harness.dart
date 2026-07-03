@@ -3,6 +3,9 @@ import 'dart:io';
 
 import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
+const _harnessResolutionPreset = ResolutionPreset.medium;
+const _harnessVideoBitrate = 800000;
+
 enum RecordingPermutationScenario {
   recordStop,
   pauseResumeTwice,
@@ -53,6 +56,8 @@ class RecordingPermutationResult {
     required this.expectedDuration,
     required this.operations,
     required this.cameraLens,
+    this.requestedResolutionPreset = _harnessResolutionPreset,
+    this.targetVideoBitrate = _harnessVideoBitrate,
     this.videoPath,
     this.metadataPath,
     this.skippedReason,
@@ -67,6 +72,8 @@ class RecordingPermutationResult {
   final Duration expectedDuration;
   final List<String> operations;
   final LensDirection cameraLens;
+  final ResolutionPreset requestedResolutionPreset;
+  final int? targetVideoBitrate;
   final String? videoPath;
   final String? metadataPath;
   final String? skippedReason;
@@ -87,6 +94,8 @@ class RecordingPermutationResult {
       'expectedDurationMs': expectedDuration.inMilliseconds,
       'operations': operations,
       'cameraLens': cameraLens.name,
+      'requestedResolutionPreset': requestedResolutionPreset.name,
+      'targetVideoBitrate': targetVideoBitrate,
       'videoPath': videoPath,
       'metadataPath': metadataPath,
       'skippedReason': skippedReason,
@@ -146,7 +155,10 @@ class RecordingPermutationHarness {
     try {
       cameraId = await _platform.createCamera(
         camera,
-        const CameraConfig(resolutionPreset: ResolutionPreset.medium),
+        const CameraConfig(
+          resolutionPreset: _harnessResolutionPreset,
+          videoBitrate: _harnessVideoBitrate,
+        ),
       );
       operations.add('createCamera:${camera.lensDirection.name}');
 
@@ -266,6 +278,8 @@ class RecordingPermutationHarness {
       expectedDuration: result.expectedDuration,
       operations: result.operations,
       cameraLens: result.cameraLens,
+      requestedResolutionPreset: result.requestedResolutionPreset,
+      targetVideoBitrate: result.targetVideoBitrate,
       videoPath: videoPath,
       metadataPath: metadataPath,
     );

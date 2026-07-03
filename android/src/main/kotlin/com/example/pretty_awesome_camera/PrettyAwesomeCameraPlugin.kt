@@ -14,14 +14,23 @@ import android.media.MediaMuxer
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Size
 import android.view.Surface
 import android.view.OrientationEventListener
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalMirrorMode
+import androidx.camera.core.MirrorMode
 import androidx.camera.core.Preview
 import androidx.camera.core.UseCaseGroup
+import androidx.camera.core.resolutionselector.AspectRatioStrategy
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.camera.video.FallbackStrategy
 import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
 import androidx.camera.video.Recorder
 import androidx.camera.video.Recording
 import androidx.camera.video.VideoCapture
@@ -63,6 +72,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     data class CameraInstance(
         val cameraId: Int,
         var cameraDescription: Map<String, Any>? = null,
+        var resolutionPreset: String = "high",
+        var videoBitrate: Int? = null,
         var textureEntry: TextureRegistry.SurfaceTextureEntry? = null,
         var camera: Camera? = null,
         var videoCapture: VideoCapture<Recorder>? = null,
@@ -144,11 +155,33 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             result.error("INVALID_ARGUMENT", "Camera description is required", null)
             return
         }
+
+        val resolutionPreset = call.argument<String>("preset") ?: "high"
+        if (!isSupportedResolutionPreset(resolutionPreset)) {
+            result.error("INVALID_ARGUMENT", "Unsupported resolution preset: $resolutionPreset", null)
+            return
+        }
+
+        val videoBitrateValue = call.argument<Any>("videoBitrate")
+        val videoBitrate = when (videoBitrateValue) {
+            null -> null
+            is Number -> videoBitrateValue.toInt()
+            else -> {
+                result.error("INVALID_ARGUMENT", "videoBitrate must be an integer", null)
+                return
+            }
+        }
+        if (videoBitrate != null && videoBitrate <= 0) {
+            result.error("INVALID_ARGUMENT", "videoBitrate must be greater than zero", null)
+            return
+        }
         
         val cameraId = nextCameraId++
         cameras[cameraId] = CameraInstance(
             cameraId = cameraId,
-            cameraDescription = cameraDescription
+            cameraDescription = cameraDescription,
+            resolutionPreset = resolutionPreset,
+            videoBitrate = videoBitrate
         )
         
         result.success(cameraId)
@@ -185,14 +218,11 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 val textureEntry = binding.textureRegistry.createSurfaceTexture()
                 cameraInstance.textureEntry = textureEntry
 
-                val preview = Preview.Builder()
-                    .build()
+                val preview = buildPreview(cameraInstance)
                 cameraInstance.preview = preview
 
-                val recorder = Recorder.Builder()
-                    .setExecutor(executor)
-                    .build()
-                val videoCapture = VideoCapture.withOutput(recorder)
+                val recorder = buildRecorder(cameraInstance)
+                val videoCapture = buildVideoCapture(recorder)
                 cameraInstance.videoCapture = videoCapture
 
                 val useCaseGroup = UseCaseGroup.Builder()
@@ -257,6 +287,76 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 surface.release()
             }
         }
+    }
+
+    private fun isSupportedResolutionPreset(preset: String): Boolean {
+        return when (preset) {
+            "low", "medium", "high", "veryHigh", "max" -> true
+            else -> false
+        }
+    }
+
+    private fun buildPreview(cameraInstance: CameraInstance): Preview {
+        return Preview.Builder()
+            .setResolutionSelector(resolutionSelectorForPreset(cameraInstance.resolutionPreset))
+            .build()
+    }
+
+    private fun buildRecorder(cameraInstance: CameraInstance): Recorder {
+        val builder = Recorder.Builder()
+            .setExecutor(executor)
+            .setQualitySelector(qualitySelectorForPreset(cameraInstance.resolutionPreset))
+
+        cameraInstance.videoBitrate?.let { bitrate ->
+            builder.setTargetVideoEncodingBitRate(bitrate)
+        }
+
+        return builder.build()
+    }
+
+    @ExperimentalMirrorMode
+    private fun buildVideoCapture(recorder: Recorder): VideoCapture<Recorder> {
+        return VideoCapture.Builder(recorder)
+            .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
+            .build()
+    }
+
+    private fun qualitySelectorForPreset(preset: String): QualitySelector {
+        val quality = when (preset) {
+            "low" -> Quality.LOWEST
+            "medium" -> Quality.SD
+            "high" -> Quality.HD
+            "veryHigh" -> Quality.FHD
+            "max" -> Quality.UHD
+            else -> Quality.HD
+        }
+        return QualitySelector.from(
+            quality,
+            FallbackStrategy.higherQualityOrLowerThan(quality)
+        )
+    }
+
+    private fun resolutionSelectorForPreset(preset: String): ResolutionSelector {
+        val resolutionStrategy = when (preset) {
+            "low" -> boundedResolutionStrategy(Size(426, 240))
+            "medium" -> boundedResolutionStrategy(Size(854, 480))
+            "high" -> boundedResolutionStrategy(Size(1280, 720))
+            "veryHigh" -> boundedResolutionStrategy(Size(1920, 1080))
+            "max" -> ResolutionStrategy.HIGHEST_AVAILABLE_STRATEGY
+            else -> boundedResolutionStrategy(Size(1280, 720))
+        }
+
+        return ResolutionSelector.Builder()
+            .setAspectRatioStrategy(AspectRatioStrategy.RATIO_16_9_FALLBACK_AUTO_STRATEGY)
+            .setResolutionStrategy(resolutionStrategy)
+            .build()
+    }
+
+    private fun boundedResolutionStrategy(size: Size): ResolutionStrategy {
+        return ResolutionStrategy(
+            size,
+            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+        )
     }
 
     private fun disposeCamera(call: MethodCall, result: Result) {
@@ -747,17 +847,14 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                     return@addListener
                 }
 
-                val preview = Preview.Builder()
-                    .build()
+                val preview = buildPreview(cameraInstance)
                     .also {
                         it.setSurfaceProvider(createSurfaceProvider(textureEntry))
                     }
                 cameraInstance.preview = preview
 
-                val recorder = Recorder.Builder()
-                    .setExecutor(executor)
-                    .build()
-                val videoCapture = VideoCapture.withOutput(recorder)
+                val recorder = buildRecorder(cameraInstance)
+                val videoCapture = buildVideoCapture(recorder)
                 cameraInstance.videoCapture = videoCapture
 
                 val useCaseGroup = UseCaseGroup.Builder()

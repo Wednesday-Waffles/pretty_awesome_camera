@@ -4,6 +4,14 @@ import 'dart:math' as math;
 
 const _metadataSuffix = '.pretty_camera_harness.json';
 const _durationToleranceMs = 500;
+const _bitrateToleranceRatio = 0.25;
+const _resolutionToleranceRatio = 0.25;
+const _presetShortSide = {
+  'low': 240,
+  'medium': 480,
+  'high': 720,
+  'veryHigh': 1080,
+};
 
 Future<void> main(List<String> args) async {
   if (args.isEmpty) {
@@ -43,7 +51,9 @@ Future<void> main(List<String> args) async {
       final result = await _validateRecording(metadataFile);
       stdout.writeln(
         'PASS ${result.scenario}: ${result.video.path} '
-        'duration=${result.durationMs}ms expected=${result.expectedMs}ms',
+        'duration=${result.durationMs}ms expected=${result.expectedMs}ms '
+        'video=${result.videoWidth}x${result.videoHeight} '
+        'bitrate=${result.bitrate ?? 'unknown'}bps',
       );
     } catch (error) {
       failures.add('${metadataFile.path}: $error');
@@ -87,13 +97,14 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     '-show_format',
     '-show_streams',
     '-show_entries',
-    'format=duration:stream=index,codec_type',
+    'format=duration,bit_rate:stream=index,codec_type,width,height,bit_rate',
     video.path,
   ]);
   final streams = (probe['streams'] as List? ?? const []).cast<Map>();
-  final videoTracks = streams
+  final videoStreams = streams
       .where((stream) => stream['codec_type'] == 'video')
-      .length;
+      .toList(growable: false);
+  final videoTracks = videoStreams.length;
   final audioTracks = streams
       .where((stream) => stream['codec_type'] == 'audio')
       .length;
@@ -103,6 +114,14 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
       'Expected exactly 1 video and 1 audio track, got video=$videoTracks audio=$audioTracks.',
     );
   }
+
+  final videoStream = videoStreams.single;
+  final videoWidth = (videoStream['width'] as num?)?.toInt();
+  final videoHeight = (videoStream['height'] as num?)?.toInt();
+  if (videoWidth == null || videoHeight == null) {
+    throw StateError('ffprobe did not report video dimensions.');
+  }
+  _assertExpectedResolution(metadata, videoWidth, videoHeight);
 
   final format = probe['format'] as Map? ?? const {};
   final durationSeconds = double.tryParse('${format['duration']}');
@@ -119,6 +138,11 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     );
   }
 
+  final bitrate =
+      int.tryParse('${videoStream['bit_rate']}') ??
+      int.tryParse('${format['bit_rate']}');
+  _assertExpectedBitrate(metadata, bitrate);
+
   await _assertMonotonicFramePts(video);
 
   return _ValidationResult(
@@ -126,7 +150,47 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     video: video,
     durationMs: durationMs,
     expectedMs: expectedMs,
+    videoWidth: videoWidth,
+    videoHeight: videoHeight,
+    bitrate: bitrate,
   );
+}
+
+void _assertExpectedResolution(Map metadata, int videoWidth, int videoHeight) {
+  final preset = metadata['requestedResolutionPreset'] as String?;
+  final expectedShortSide = _presetShortSide[preset];
+  if (expectedShortSide == null) {
+    return;
+  }
+
+  final actualShortSide = math.min(videoWidth, videoHeight);
+  final minimum = (expectedShortSide * (1 - _resolutionToleranceRatio)).round();
+  final maximum = (expectedShortSide * (1 + _resolutionToleranceRatio)).round();
+  if (actualShortSide < minimum || actualShortSide > maximum) {
+    throw StateError(
+      'Expected $preset short side near ${expectedShortSide}px, got '
+      '${videoWidth}x$videoHeight.',
+    );
+  }
+}
+
+void _assertExpectedBitrate(Map metadata, int? actualBitrate) {
+  final targetBitrate = (metadata['targetVideoBitrate'] as num?)?.round();
+  if (targetBitrate == null || targetBitrate <= 0) {
+    return;
+  }
+  if (actualBitrate == null || actualBitrate <= 0) {
+    throw StateError('ffprobe did not report bitrate.');
+  }
+
+  final minimum = (targetBitrate * (1 - _bitrateToleranceRatio)).round();
+  final maximum = (targetBitrate * (1 + _bitrateToleranceRatio)).round();
+  if (actualBitrate < minimum || actualBitrate > maximum) {
+    throw StateError(
+      'Bitrate $actualBitrate bps is outside +/-25% of target '
+      '$targetBitrate bps.',
+    );
+  }
 }
 
 Future<File> _resolveVideoFile(File metadataFile, Map metadata) async {
@@ -198,10 +262,16 @@ class _ValidationResult {
     required this.video,
     required this.durationMs,
     required this.expectedMs,
+    required this.videoWidth,
+    required this.videoHeight,
+    required this.bitrate,
   });
 
   final String scenario;
   final File video;
   final int durationMs;
   final int expectedMs;
+  final int videoWidth;
+  final int videoHeight;
+  final int? bitrate;
 }
