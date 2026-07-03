@@ -1,0 +1,71 @@
+name: Android Camera Harness
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/android-camera-harness.yml"
+      - "android/**"
+      - "example/**"
+      - "lib/**"
+      - "tool/ffprobe_recording_outputs.dart"
+      - "pubspec.yaml"
+
+jobs:
+  android-camera-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.44.3"
+          channel: stable
+          cache: true
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Resolve root dependencies
+        run: flutter pub get
+
+      - name: Resolve example dependencies
+        run: flutter pub get
+        working-directory: example
+
+      - name: Run camera smoke harness and ffprobe outputs
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          script: |
+            set -euxo pipefail
+            cd example
+            (
+              for _ in $(seq 1 60); do
+                adb shell pm grant com.example.pretty_awesome_camera_example android.permission.CAMERA &&
+                adb shell pm grant com.example.pretty_awesome_camera_example android.permission.RECORD_AUDIO &&
+                break || true
+                sleep 1
+              done
+            ) &
+            flutter test integration_test/recording_permutation_harness_test.dart \
+              -d emulator-5554 \
+              --dart-define=CAMERA_HARNESS_SCENARIOS=record_stop,rapid_start_stop
+            cd ..
+            mkdir -p build/camera-harness-output
+            adb exec-out run-as com.example.pretty_awesome_camera_example sh -c \
+              'cd cache && tar cf - *.mp4 *.pretty_camera_harness.json' \
+              | tar xf - -C build/camera-harness-output
+            dart run tool/ffprobe_recording_outputs.dart build/camera-harness-output

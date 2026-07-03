@@ -10,6 +10,8 @@ import 'package:gal/gal.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
+import 'recording_permutation_harness.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([
@@ -139,6 +141,14 @@ class _CameraLaunchScreenState extends State<CameraLaunchScreen> {
     }
   }
 
+  Future<void> _openDiagnostics() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const RecordingPermutationScreen(),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final frontCameraAvailable = _cachedCameras.any(
@@ -228,8 +238,290 @@ class _CameraLaunchScreenState extends State<CameraLaunchScreen> {
                           ),
                   ),
                 ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _isPrimingCache ? null : _openDiagnostics,
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.32),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 18),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                    ),
+                    child: const Text(
+                      'Recording Diagnostics',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
               ],
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class RecordingPermutationScreen extends StatefulWidget {
+  const RecordingPermutationScreen({super.key});
+
+  @override
+  State<RecordingPermutationScreen> createState() =>
+      _RecordingPermutationScreenState();
+}
+
+class _RecordingPermutationScreenState
+    extends State<RecordingPermutationScreen> {
+  final RecordingPermutationHarness _harness = RecordingPermutationHarness();
+  bool _isRunning = false;
+  String? _message;
+  List<RecordingPermutationResult> _results = const [];
+
+  Future<void> _runAll() {
+    return _runScenarios(RecordingPermutationScenario.values);
+  }
+
+  Future<void> _runOne(RecordingPermutationScenario scenario) {
+    return _runScenarios([scenario]);
+  }
+
+  Future<void> _runScenarios(
+    List<RecordingPermutationScenario> scenarios,
+  ) async {
+    final hasPermissions = await _ensurePermissions();
+    if (!hasPermissions) {
+      setState(() {
+        _message = 'Camera and microphone permissions are required.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isRunning = true;
+      _message = null;
+    });
+
+    try {
+      final results = await _harness.runAll(scenarios: scenarios);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _results = [...results, ..._results];
+        _message = 'Completed ${results.length} scenario(s).';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _message = 'Harness failed: $error';
+      });
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRunning = false;
+        });
+      }
+    }
+  }
+
+  Future<bool> _ensurePermissions() async {
+    final statuses = await [Permission.camera, Permission.microphone].request();
+    return statuses.values.every((status) => status.isGranted);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: DecoratedBox(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xFF120F1A), Color(0xFF090909), Color(0xFF152118)],
+          ),
+        ),
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Recording diagnostics',
+                        style: Theme.of(context).textTheme.headlineSmall
+                            ?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                    ),
+                    _GlassIconButton(
+                      icon: CupertinoIcons.back,
+                      onTap: () async {
+                        if (mounted) {
+                          Navigator.of(context).pop();
+                        }
+                      },
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                _InfoCard(
+                  title: 'Harness output',
+                  body:
+                      'Each scenario writes a video plus a .pretty_camera_harness.json sidecar containing the expected pause-adjusted duration for ffprobe validation.',
+                ),
+                if (_message != null) ...[
+                  const SizedBox(height: 12),
+                  _InfoCard(title: 'Status', body: _message!),
+                ],
+                const SizedBox(height: 16),
+                FilledButton(
+                  onPressed: _isRunning ? null : _runAll,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFFF5A36),
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size.fromHeight(52),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(18),
+                    ),
+                  ),
+                  child: _isRunning
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Run All Scenarios'),
+                ),
+                const SizedBox(height: 12),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: RecordingPermutationScenario.values.map((scenario) {
+                    return ActionChip(
+                      label: Text(scenario.id),
+                      onPressed: _isRunning ? null : () => _runOne(scenario),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: ListView.separated(
+                    itemCount: _results.length,
+                    separatorBuilder: (context, index) =>
+                        const SizedBox(height: 10),
+                    itemBuilder: (context, index) {
+                      return _PermutationResultCard(result: _results[index]);
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PermutationResultCard extends StatelessWidget {
+  const _PermutationResultCard({required this.result});
+
+  final RecordingPermutationResult result;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = result.isSkipped
+        ? 'skipped'
+        : result.isSuccess
+        ? 'success'
+        : 'failed';
+    final color = result.isSkipped
+        ? Colors.amber
+        : result.isSuccess
+        ? Colors.greenAccent
+        : Colors.redAccent;
+    final detail = result.skippedReason ?? result.error ?? result.videoPath;
+
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 9,
+                    height: 9,
+                    decoration: BoxDecoration(
+                      color: color,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      result.scenario.label,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Text(status, style: TextStyle(color: color)),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'expected=${result.expectedDuration.inMilliseconds}ms paused=${result.pausedDuration.inMilliseconds}ms',
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              if (detail != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  detail,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ],
+              if (result.metadataPath != null) ...[
+                const SizedBox(height: 6),
+                Text(
+                  result.metadataPath!,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white38, fontSize: 12),
+                ),
+              ],
+            ],
           ),
         ),
       ),
