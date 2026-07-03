@@ -38,36 +38,57 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
     );
   }
 
+  CameraException _cameraExceptionFromMissingPluginException(
+    MissingPluginException exception,
+    String methodName,
+  ) {
+    return CameraException(
+      code: 'NOT_IMPLEMENTED',
+      message:
+          exception.message ??
+          'Platform method $methodName has not been implemented.',
+    );
+  }
+
+  Future<T?> _invokeCameraMethod<T>(
+    String methodName, {
+    Object? arguments,
+    required String fallbackMessage,
+  }) async {
+    try {
+      return await methodChannel.invokeMethod<T>(methodName, arguments);
+    } on MissingPluginException catch (e) {
+      throw _cameraExceptionFromMissingPluginException(e, methodName);
+    } on PlatformException catch (e) {
+      throw _cameraExceptionFromPlatformException(e, fallbackMessage);
+    }
+  }
+
   @override
   Future<String?> getPlatformVersion() async {
-    final version = await methodChannel.invokeMethod<String>(
+    final version = await _invokeCameraMethod<String>(
       'getPlatformVersion',
+      fallbackMessage: 'Failed to get platform version',
     );
     return version;
   }
 
   @override
   Future<List<CameraDescription>> getAvailableCameras() async {
-    try {
-      final result = await methodChannel.invokeMethod<List<dynamic>>(
-        'getAvailableCameras',
-      );
-      if (result == null) {
-        return [];
-      }
-      return result
-          .map(
-            (camera) => CameraDescription.fromJson(
-              Map<dynamic, dynamic>.from(camera as Map),
-            ),
-          )
-          .toList();
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to get available cameras',
-      );
+    final result = await _invokeCameraMethod<List<dynamic>>(
+      'getAvailableCameras',
+      fallbackMessage: 'Failed to get available cameras',
+    );
+    if (result == null) {
+      return [];
     }
+    return result
+        .map(
+          (camera) => CameraDescription.fromJson(
+            Map<dynamic, dynamic>.from(camera as Map),
+          ),
+        )
+        .toList();
   }
 
   @override
@@ -75,139 +96,104 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
     CameraDescription camera,
     CameraConfig config,
   ) async {
-    try {
-      final cameraId = await methodChannel.invokeMethod<int>('createCamera', {
+    final cameraId = await _invokeCameraMethod<int>(
+      'createCamera',
+      arguments: {
         'camera': camera.toJson(),
         'preset': config.resolutionPreset.name,
-      });
-      if (cameraId == null) {
-        throw CameraException(
-          code: 'invalid_response',
-          message: 'Platform returned null camera ID',
-        );
-      }
-      return cameraId;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(e, 'Failed to create camera');
+      },
+      fallbackMessage: 'Failed to create camera',
+    );
+    if (cameraId == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null camera ID',
+      );
     }
+    return cameraId;
   }
 
   @override
   Future<CameraInitializationResult> initializeCamera(int cameraId) async {
-    try {
-      final result = await methodChannel.invokeMethod<dynamic>(
-        'initializeCamera',
-        {'cameraId': cameraId},
-      );
-      if (result == null) {
-        throw CameraException(
-          code: 'invalid_response',
-          message: 'Platform returned null initialization result',
-        );
-      }
-      if (result is int) {
-        return CameraInitializationResult(textureId: result);
-      }
-      return CameraInitializationResult.fromJson(
-        Map<dynamic, dynamic>.from(result as Map),
-      );
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to initialize camera',
+    final result = await _invokeCameraMethod<dynamic>(
+      'initializeCamera',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to initialize camera',
+    );
+    if (result == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null initialization result',
       );
     }
+    if (result is int) {
+      return CameraInitializationResult(textureId: result);
+    }
+    return CameraInitializationResult.fromJson(
+      Map<dynamic, dynamic>.from(result as Map),
+    );
   }
 
   @override
   Future<void> startRecording(int cameraId) async {
-    try {
-      await methodChannel.invokeMethod<void>('startRecording', {
-        'cameraId': cameraId,
-      });
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to start recording',
-      );
-    }
+    await _invokeCameraMethod<void>(
+      'startRecording',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to start recording',
+    );
   }
 
   @override
   Future<String?> stopRecording(int cameraId) async {
-    try {
-      final filePath = await methodChannel.invokeMethod<String>(
-        'stopRecording',
-        {'cameraId': cameraId},
-      );
-      return filePath;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to stop recording',
-      );
-    }
+    final filePath = await _invokeCameraMethod<String>(
+      'stopRecording',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to stop recording',
+    );
+    return filePath;
   }
 
   @override
   Future<void> pauseRecording(int cameraId) async {
-    try {
-      await methodChannel.invokeMethod<void>('pauseRecording', {
-        'cameraId': cameraId,
-      });
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to pause recording',
-      );
-    }
+    await _invokeCameraMethod<void>(
+      'pauseRecording',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to pause recording',
+    );
   }
 
   @override
   Future<void> resumeRecording(int cameraId) async {
-    try {
-      await methodChannel.invokeMethod<void>('resumeRecording', {
-        'cameraId': cameraId,
-      });
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to resume recording',
-      );
-    }
+    await _invokeCameraMethod<void>(
+      'resumeRecording',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to resume recording',
+    );
   }
 
   @override
   Future<double> setZoom(int cameraId, double zoomFactor) async {
-    try {
-      final appliedZoom = await methodChannel.invokeMethod<double>('setZoom', {
-        'cameraId': cameraId,
-        'zoom': zoomFactor,
-      });
-      if (appliedZoom == null) {
-        throw CameraException(
-          code: 'invalid_response',
-          message: 'Platform returned null zoom factor',
-        );
-      }
-      return appliedZoom;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(e, 'Failed to set zoom');
+    final appliedZoom = await _invokeCameraMethod<double>(
+      'setZoom',
+      arguments: {'cameraId': cameraId, 'zoom': zoomFactor},
+      fallbackMessage: 'Failed to set zoom',
+    );
+    if (appliedZoom == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null zoom factor',
+      );
     }
+    return appliedZoom;
   }
 
   @override
   Future<void> disposeCamera(int cameraId) async {
-    try {
-      await methodChannel.invokeMethod<void>('disposeCamera', {
-        'cameraId': cameraId,
-      });
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to dispose camera',
-      );
-    }
+    await _invokeCameraMethod<void>(
+      'disposeCamera',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to dispose camera',
+    );
   }
 
   @override
@@ -248,71 +234,51 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<bool> canSwitchCamera(int cameraId) async {
-    try {
-      final canSwitch = await methodChannel.invokeMethod<bool>(
-        'canSwitchCamera',
-        {'cameraId': cameraId},
-      );
-      return canSwitch ?? false;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to check if camera can switch',
-      );
-    }
+    final canSwitch = await _invokeCameraMethod<bool>(
+      'canSwitchCamera',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to check if camera can switch',
+    );
+    return canSwitch ?? false;
   }
 
   @override
   Future<CameraInitializationResult> switchCamera(int cameraId) async {
-    try {
-      final result = await methodChannel.invokeMethod<dynamic>('switchCamera', {
-        'cameraId': cameraId,
-      });
-      if (result == null) {
-        throw CameraException(
-          code: 'invalid_response',
-          message: 'Platform returned null camera switch result',
-        );
-      }
-      if (result is int) {
-        return CameraInitializationResult(textureId: result);
-      }
-      return CameraInitializationResult.fromJson(
-        Map<dynamic, dynamic>.from(result as Map),
+    final result = await _invokeCameraMethod<dynamic>(
+      'switchCamera',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to switch camera',
+    );
+    if (result == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null camera switch result',
       );
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(e, 'Failed to switch camera');
     }
+    if (result is int) {
+      return CameraInitializationResult(textureId: result);
+    }
+    return CameraInitializationResult.fromJson(
+      Map<dynamic, dynamic>.from(result as Map),
+    );
   }
 
   @override
   Future<bool> get canSwitchCurrentCamera async {
-    try {
-      final canSwitch = await methodChannel.invokeMethod<bool>(
-        'canSwitchCurrentCamera',
-      );
-      return canSwitch ?? false;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to check if current camera can switch',
-      );
-    }
+    final canSwitch = await _invokeCameraMethod<bool>(
+      'canSwitchCurrentCamera',
+      fallbackMessage: 'Failed to check if current camera can switch',
+    );
+    return canSwitch ?? false;
   }
 
   @override
   Future<bool> isMultiCamSupported() async {
-    try {
-      final supported = await methodChannel.invokeMethod<bool>(
-        'isMultiCamSupported',
-      );
-      return supported ?? false;
-    } on PlatformException catch (e) {
-      throw _cameraExceptionFromPlatformException(
-        e,
-        'Failed to detect MultiCam support',
-      );
-    }
+    final supported = await _invokeCameraMethod<bool>(
+      'isMultiCamSupported',
+      fallbackMessage: 'Failed to detect MultiCam support',
+    );
+    return supported ?? false;
   }
 
   @override

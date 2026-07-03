@@ -642,7 +642,14 @@ class CameraController extends ValueNotifier<CameraState> {
     await _audioDeviceSubscription?.cancel();
     _audioDeviceSubscription = _platform
         .onAudioDeviceChanged(cameraId)
-        .listen(_audioDeviceChangedController.add);
+        .listen(
+          _audioDeviceChangedController.add,
+          onError: (Object error, StackTrace stackTrace) {
+            debugPrint(
+              'pretty_awesome_camera audio device stream error: $error',
+            );
+          },
+        );
   }
 
   void _handleRecordingState(RecordingState state) {
