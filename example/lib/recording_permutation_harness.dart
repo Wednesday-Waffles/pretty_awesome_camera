@@ -12,6 +12,9 @@ enum RecordingPermutationScenario {
   recordStop,
   pauseResumeTwice,
   flipTwice,
+  pauseResumeFlip,
+  pausedFlipUnsupported,
+  rapidFlipFuzz,
   pauseStop,
   rapidStartStop,
 }
@@ -22,6 +25,10 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
       RecordingPermutationScenario.recordStop => 'record_stop',
       RecordingPermutationScenario.pauseResumeTwice => 'pause_resume_twice',
       RecordingPermutationScenario.flipTwice => 'flip_twice',
+      RecordingPermutationScenario.pauseResumeFlip => 'pause_resume_flip',
+      RecordingPermutationScenario.pausedFlipUnsupported =>
+        'paused_flip_unsupported',
+      RecordingPermutationScenario.rapidFlipFuzz => 'rapid_flip_fuzz',
       RecordingPermutationScenario.pauseStop => 'pause_stop',
       RecordingPermutationScenario.rapidStartStop => 'rapid_start_stop',
     };
@@ -33,6 +40,12 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
       RecordingPermutationScenario.pauseResumeTwice =>
         'Record -> pause x2 -> resume -> stop',
       RecordingPermutationScenario.flipTwice => 'Record -> flip x2 -> stop',
+      RecordingPermutationScenario.pauseResumeFlip =>
+        'Record -> pause -> resume -> flip -> stop',
+      RecordingPermutationScenario.pausedFlipUnsupported =>
+        'Record -> pause -> blocked flip -> resume -> stop',
+      RecordingPermutationScenario.rapidFlipFuzz =>
+        'Record -> rapid flip attempts -> stop',
       RecordingPermutationScenario.pauseStop => 'Record -> pause -> stop',
       RecordingPermutationScenario.rapidStartStop => 'Rapid start -> stop',
     };
@@ -148,8 +161,7 @@ class RecordingPermutationHarness {
       return _skippedResult(scenario, 'No cameras available.');
     }
 
-    if (scenario == RecordingPermutationScenario.flipTwice &&
-        !_hasFrontAndBack(cameras)) {
+    if (_requiresFrontAndBack(scenario) && !_hasFrontAndBack(cameras)) {
       return _skippedResult(
         scenario,
         'Front and back cameras are required for flip permutation.',
@@ -197,6 +209,36 @@ class RecordingPermutationHarness {
           await Future<void>.delayed(shortClipDuration);
           await _platform.switchCamera(cameraId);
           operations.add('switchCamera');
+          await Future<void>.delayed(shortClipDuration);
+        case RecordingPermutationScenario.pauseResumeFlip:
+          await Future<void>.delayed(shortClipDuration);
+          pausedDuration += await _pauseAndResume(cameraId, operations);
+          await Future<void>.delayed(shortClipDuration);
+          await _platform.switchCamera(cameraId);
+          operations.add('switchCamera');
+          await Future<void>.delayed(shortClipDuration);
+        case RecordingPermutationScenario.pausedFlipUnsupported:
+          await Future<void>.delayed(shortClipDuration);
+          final pauseStartedAt = DateTime.now();
+          await _platform.pauseRecording(cameraId);
+          operations.add('pauseRecording');
+          try {
+            await _platform.switchCamera(cameraId);
+            throw StateError('switchCamera succeeded while paused.');
+          } on CameraException catch (error) {
+            if (error.code != 'PAUSED_FLIP_UNSUPPORTED') {
+              rethrow;
+            }
+            operations.add('switchCamera:${error.code}');
+          }
+          await Future<void>.delayed(pauseDuration);
+          pausedDuration += DateTime.now().difference(pauseStartedAt);
+          await _platform.resumeRecording(cameraId);
+          operations.add('resumeRecording');
+          await Future<void>.delayed(shortClipDuration);
+        case RecordingPermutationScenario.rapidFlipFuzz:
+          await Future<void>.delayed(shortClipDuration);
+          await _rapidFlipFuzz(cameraId, operations);
           await Future<void>.delayed(shortClipDuration);
         case RecordingPermutationScenario.pauseStop:
           await Future<void>.delayed(shortClipDuration);
@@ -264,6 +306,29 @@ class RecordingPermutationHarness {
     await _platform.resumeRecording(cameraId);
     operations.add('resumeRecording');
     return pausedDuration;
+  }
+
+  Future<void> _rapidFlipFuzz(int cameraId, List<String> operations) async {
+    Future<void> attemptSwitch(int index) async {
+      try {
+        await _platform.switchCamera(cameraId);
+        operations.add('switchCamera:$index:success');
+      } on CameraException catch (error) {
+        if (error.code != 'SWITCH_IN_PROGRESS') {
+          rethrow;
+        }
+        operations.add('switchCamera:$index:${error.code}');
+      }
+    }
+
+    final attempts = <Future<void>>[];
+    for (var index = 0; index < 8; index += 1) {
+      attempts.add(attemptSwitch(index));
+    }
+    await Future.wait(attempts);
+    if (!operations.any((operation) => operation.endsWith(':success'))) {
+      throw StateError('Rapid flip fuzz completed without a successful flip.');
+    }
   }
 
   Future<RecordingPermutationResult> _writeMetadata(
@@ -366,6 +431,16 @@ class RecordingPermutationHarness {
       (camera) => camera.lensDirection == LensDirection.back,
     );
     return hasFront && hasBack;
+  }
+
+  bool _requiresFrontAndBack(RecordingPermutationScenario scenario) {
+    return switch (scenario) {
+      RecordingPermutationScenario.flipTwice ||
+      RecordingPermutationScenario.pauseResumeFlip ||
+      RecordingPermutationScenario.pausedFlipUnsupported ||
+      RecordingPermutationScenario.rapidFlipFuzz => true,
+      _ => false,
+    };
   }
 
   Future<void> _bestEffortStop(int cameraId) async {

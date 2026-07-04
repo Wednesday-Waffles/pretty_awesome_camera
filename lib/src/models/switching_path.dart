@@ -16,9 +16,14 @@ enum SwitchingPath {
   /// Records segments and merges them when recording stops.
   fallbackSegmentMerge,
 
-  /// Android fallback path using segment recording with merge on stop.
+  /// Android path using CameraX persistent recording across camera rebinds.
   ///
-  /// Used on all Android devices in v4.1.
-  /// Records segments and merges them when recording stops.
+  /// Used on Android devices that pass runtime front/back camera checks.
+  /// Records one continuous file without segment merging.
+  androidPersistentRecording,
+
+  /// Legacy Android segment-merge path value retained for enum compatibility.
+  ///
+  /// New Android recordings no longer use this path.
   androidFallbackSegmentMerge,
 }
