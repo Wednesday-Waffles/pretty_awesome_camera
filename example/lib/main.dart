@@ -105,7 +105,10 @@ class _CameraLaunchScreenState extends State<CameraLaunchScreen> {
     try {
       controller = await CameraController.create(
         preferredLens: LensDirection.front,
-        config: const CameraConfig(resolutionPreset: ResolutionPreset.medium),
+        config: const CameraConfig(
+          resolutionPreset: ResolutionPreset.medium,
+          videoBitrate: 800000,
+        ),
       );
       final prewarmFuture = controller.prewarmUp();
 
@@ -546,7 +549,8 @@ class CameraScreen extends StatefulWidget {
 class _CameraScreenState extends State<CameraScreen> {
   late CameraController _controller;
   CameraConfig _config = const CameraConfig(
-    resolutionPreset: ResolutionPreset.high,
+    resolutionPreset: ResolutionPreset.medium,
+    videoBitrate: 800000,
   );
   String? _message;
   Future<String>? _switchingPathFuture;

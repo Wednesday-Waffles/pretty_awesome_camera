@@ -101,6 +101,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       arguments: {
         'camera': camera.toJson(),
         'preset': config.resolutionPreset.name,
+        if (config.videoBitrate != null) 'videoBitrate': config.videoBitrate,
       },
       fallbackMessage: 'Failed to create camera',
     );
