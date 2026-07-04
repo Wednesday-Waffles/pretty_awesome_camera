@@ -88,6 +88,18 @@ internal object RecordingFinalizeContract {
         }
     }
 
+    fun hasValidData(
+        outputExists: Boolean,
+        outputLengthBytes: Long,
+        recordedBytes: Long,
+        recordedDurationNanos: Long
+    ): Boolean {
+        return outputExists &&
+            outputLengthBytes > 0L &&
+            recordedBytes > 0L &&
+            recordedDurationNanos > 0L
+    }
+
     private fun fatalFinalizeError(code: String): FinalizeDecision {
         return FinalizeDecision(
             action = FinalizeAction.THROW_ERROR,

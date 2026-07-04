@@ -77,6 +77,13 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         val timeoutRunnable: Runnable
     )
 
+    data class CompletedFinalize(
+        val outputFile: File,
+        val error: Int,
+        val hasValidData: Boolean,
+        val hasCause: Boolean
+    )
+
     data class CameraInstance(
         val cameraId: Int,
         var cameraDescription: Map<String, Any>? = null,
@@ -96,6 +103,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         var pendingPauseResult: Result? = null,
         var pendingResumeResult: Result? = null,
         var pendingStop: PendingStop? = null,
+        var completedFinalize: CompletedFinalize? = null,
         var pauseCount: Int = 0,
         var resumeCount: Int = 0,
         var switchCount: Int = 0
@@ -478,7 +486,11 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
 
         try {
-            if (cameraInstance.recording != null || cameraInstance.pendingStop != null) {
+            if (
+                cameraInstance.recording != null ||
+                cameraInstance.pendingStop != null ||
+                cameraInstance.completedFinalize != null
+            ) {
                 result.error(
                     "RECORDING_IN_PROGRESS",
                     "Camera is already recording",
@@ -663,6 +675,19 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        cameraInstance.completedFinalize?.let { completedFinalize ->
+            completeStopFromFinalize(
+                cameraInstance = cameraInstance,
+                result = result,
+                outputFile = completedFinalize.outputFile,
+                finalizeError = completedFinalize.error,
+                hasValidData = completedFinalize.hasValidData,
+                hasCause = completedFinalize.hasCause,
+                stage = "stop_after_finalize"
+            )
+            return
+        }
+
         val recording = cameraInstance.recording ?: run {
             result.error(
                 "NO_RECORDING",
@@ -693,7 +718,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 cameraInstance.recording = null
                 cameraInstance.recordingURL = null
                 cameraInstance.isPaused = false
-                deleteQuietly(outputFile)
                 result.error(
                     RecordingFinalizeContract.STOP_TIMEOUT,
                     "Timed out waiting for CameraX finalize",
@@ -754,44 +778,87 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        val pendingStop = cameraInstance.pendingStop ?: return
+        val pendingStop = cameraInstance.pendingStop ?: run {
+            cacheSpontaneousFinalize(cameraInstance, event)
+            return
+        }
         mainHandler.removeCallbacks(pendingStop.timeoutRunnable)
         cameraInstance.pendingStop = null
         failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
 
-        val outputFile = pendingStop.outputFile
-        val hasValidData = outputFileHasData(outputFile)
-        val decision = RecordingFinalizeContract.decide(event.error, hasValidData)
+        completeStopFromFinalize(
+            cameraInstance = cameraInstance,
+            result = pendingStop.result,
+            outputFile = pendingStop.outputFile,
+            finalizeError = event.error,
+            hasValidData = outputHasValidData(event, pendingStop.outputFile),
+            hasCause = event.cause != null,
+            stage = "stop_finalize"
+        )
+    }
+
+    private fun cacheSpontaneousFinalize(
+        cameraInstance: CameraInstance,
+        event: VideoRecordEvent.Finalize
+    ) {
+        val outputFile = cameraInstance.recordingURL
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { File(it) }
+        if (outputFile != null) {
+            cameraInstance.completedFinalize = CompletedFinalize(
+                outputFile = outputFile,
+                error = event.error,
+                hasValidData = outputHasValidData(event, outputFile),
+                hasCause = event.cause != null
+            )
+        }
+        failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
+        cameraInstance.recording = null
+        cameraInstance.recordingURL = null
+        cameraInstance.isPaused = false
+    }
+
+    private fun completeStopFromFinalize(
+        cameraInstance: CameraInstance,
+        result: Result,
+        outputFile: File,
+        finalizeError: Int,
+        hasValidData: Boolean,
+        hasCause: Boolean,
+        stage: String
+    ) {
+        val decision = RecordingFinalizeContract.decide(finalizeError, hasValidData)
         val details = recordingDiagnostics(
             cameraInstance,
-            "stop_finalize",
+            stage,
             mapOf(
-                "native_finalize_code" to event.error,
-                "native_finalize_error" to RecordingFinalizeContract.errorName(event.error),
+                "native_finalize_code" to finalizeError,
+                "native_finalize_error" to RecordingFinalizeContract.errorName(finalizeError),
                 "native_output_has_data" to hasValidData,
-                "native_has_cause" to (event.cause != null)
+                "native_has_cause" to hasCause
             )
         )
 
         cameraInstance.recording = null
         cameraInstance.recordingURL = null
+        cameraInstance.completedFinalize = null
         cameraInstance.isPaused = false
         cameraInstance.segmentFiles.clear()
         cameraInstance.currentSegmentIndex = 0
 
         when (decision.action) {
-            FinalizeAction.RETURN_PATH -> pendingStop.result.success(outputFile.absolutePath)
+            FinalizeAction.RETURN_PATH -> result.success(outputFile.absolutePath)
             FinalizeAction.RETURN_NULL -> {
                 if (decision.deletePartial) {
                     deleteQuietly(outputFile)
                 }
-                pendingStop.result.success(null)
+                result.success(null)
             }
             FinalizeAction.THROW_ERROR -> {
                 if (decision.deletePartial) {
                     deleteQuietly(outputFile)
                 }
-                pendingStop.result.error(
+                result.error(
                     decision.errorCode ?: "STOP_FINALIZE_ERROR",
                     decision.message ?: "CameraX failed to finalize recording",
                     details
@@ -826,12 +893,23 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         cameraInstance.pendingPauseResult = null
         cameraInstance.pendingResumeResult = null
         cameraInstance.pendingStop = null
+        cameraInstance.completedFinalize = null
         cameraInstance.pauseCount = 0
         cameraInstance.resumeCount = 0
         cameraInstance.switchCount = 0
     }
 
     private fun outputFileHasData(file: File): Boolean = file.exists() && file.length() > 0L
+
+    private fun outputHasValidData(event: VideoRecordEvent.Finalize, file: File): Boolean {
+        val stats = event.recordingStats
+        return RecordingFinalizeContract.hasValidData(
+            outputExists = file.exists(),
+            outputLengthBytes = file.length(),
+            recordedBytes = stats.numBytesRecorded,
+            recordedDurationNanos = stats.recordedDurationNanos
+        )
+    }
 
     private fun deleteQuietly(file: File) {
         try {
@@ -851,6 +929,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "native_stage" to stage,
             "native_has_recording" to (cameraInstance.recording != null),
             "native_has_pending_stop" to (cameraInstance.pendingStop != null),
+            "native_has_completed_finalize" to (cameraInstance.completedFinalize != null),
             "native_is_paused" to cameraInstance.isPaused,
             "native_is_switching" to cameraInstance.isSwitching,
             "native_audio_device_type" to "unknown",

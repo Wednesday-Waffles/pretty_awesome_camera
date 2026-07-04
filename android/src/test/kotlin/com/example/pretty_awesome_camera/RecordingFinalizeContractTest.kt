@@ -170,4 +170,35 @@ internal class RecordingFinalizeContractTest {
     fun stopTimeoutCode_matchesPlatformContract() {
         assertEquals("STOP_TIMEOUT", RecordingFinalizeContract.STOP_TIMEOUT)
     }
+
+    @Test
+    fun hasValidData_requiresFileBytesAndRecordingStats() {
+        assertTrue(
+            RecordingFinalizeContract.hasValidData(
+                outputExists = true,
+                outputLengthBytes = 1024L,
+                recordedBytes = 1024L,
+                recordedDurationNanos = 1_000_000L
+            )
+        )
+
+        val invalidRows = listOf(
+            listOf(false, 1024L, 1024L, 1_000_000L),
+            listOf(true, 0L, 1024L, 1_000_000L),
+            listOf(true, 1024L, 0L, 1_000_000L),
+            listOf(true, 1024L, 1024L, 0L)
+        )
+
+        for (row in invalidRows) {
+            assertEquals(
+                false,
+                RecordingFinalizeContract.hasValidData(
+                    outputExists = row[0] as Boolean,
+                    outputLengthBytes = row[1] as Long,
+                    recordedBytes = row[2] as Long,
+                    recordedDurationNanos = row[3] as Long
+                )
+            )
+        }
+    }
 }
