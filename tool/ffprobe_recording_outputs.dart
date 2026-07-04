@@ -11,6 +11,7 @@ const _presetShortSide = {
   'medium': 480,
   'high': 720,
   'veryHigh': 1080,
+  'max': 2160,
 };
 
 Future<void> main(List<String> args) async {

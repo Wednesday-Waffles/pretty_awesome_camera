@@ -1,6 +1,7 @@
 package com.example.pretty_awesome_camera
 
 import android.app.Activity
+import android.annotation.SuppressLint
 import android.content.Context
 import android.hardware.SensorManager
 import android.hardware.camera2.CameraCharacteristics
@@ -314,7 +315,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         return builder.build()
     }
 
-    @ExperimentalMirrorMode
+    @SuppressLint("UnsafeOptInUsageError")
     private fun buildVideoCapture(recorder: Recorder): VideoCapture<Recorder> {
         return VideoCapture.Builder(recorder)
             .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
