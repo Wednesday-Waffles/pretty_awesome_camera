@@ -119,7 +119,7 @@ class RecordingPermutationResult {
 class RecordingPermutationHarness {
   RecordingPermutationHarness({
     PrettyAwesomeCameraPlatform? platform,
-    this.shortClipDuration = const Duration(milliseconds: 900),
+    this.shortClipDuration = const Duration(milliseconds: 1800),
     this.pauseDuration = const Duration(milliseconds: 450),
     this.rapidClipDuration = const Duration(milliseconds: 250),
   }) : _platform = platform ?? PrettyAwesomeCameraPlatform.instance;
