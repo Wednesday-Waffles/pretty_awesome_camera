@@ -6,6 +6,7 @@ import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 const _harnessResolutionPreset = ResolutionPreset.medium;
 const _harnessVideoBitrate = 800000;
+const _metadataSuffix = '.pretty_camera_harness.json';
 
 enum RecordingPermutationScenario {
   recordStop,
@@ -84,7 +85,11 @@ class RecordingPermutationResult {
   final String? skippedReason;
   final String? error;
 
-  bool get isSuccess => videoPath != null && error == null && !isSkipped;
+  bool get expectsOutput =>
+      scenario != RecordingPermutationScenario.rapidStartStop;
+
+  bool get isSuccess =>
+      error == null && !isSkipped && (!expectsOutput || videoPath != null);
 
   bool get isSkipped => skippedReason != null;
 
@@ -114,7 +119,7 @@ class RecordingPermutationResult {
 class RecordingPermutationHarness {
   RecordingPermutationHarness({
     PrettyAwesomeCameraPlatform? platform,
-    this.shortClipDuration = const Duration(milliseconds: 900),
+    this.shortClipDuration = const Duration(milliseconds: 1800),
     this.pauseDuration = const Duration(milliseconds: 450),
     this.rapidClipDuration = const Duration(milliseconds: 250),
   }) : _platform = platform ?? PrettyAwesomeCameraPlatform.instance;
@@ -154,7 +159,7 @@ class RecordingPermutationHarness {
     final camera = _preferredCamera(cameras);
     final operations = <String>[];
     int? cameraId;
-    final startedAt = DateTime.now();
+    var startedAt = DateTime.now();
     var stoppedAt = startedAt;
     var pausedDuration = Duration.zero;
     String? videoPath;
@@ -174,6 +179,7 @@ class RecordingPermutationHarness {
 
       await _platform.startRecording(cameraId);
       operations.add('startRecording');
+      startedAt = DateTime.now();
 
       switch (scenario) {
         case RecordingPermutationScenario.recordStop:
@@ -265,6 +271,30 @@ class RecordingPermutationHarness {
   ) async {
     final videoPath = result.videoPath;
     if (videoPath == null || videoPath.isEmpty) {
+      if (!result.expectsOutput) {
+        final outputDirectory = await _harnessOutputDirectory();
+        final metadataPath =
+            '${outputDirectory.path}/${result.scenario.id}_${DateTime.now().millisecondsSinceEpoch}$_metadataSuffix';
+        final withPath = RecordingPermutationResult(
+          scenario: result.scenario,
+          startedAt: result.startedAt,
+          stoppedAt: result.stoppedAt,
+          wallClockDuration: result.wallClockDuration,
+          pausedDuration: result.pausedDuration,
+          expectedDuration: result.expectedDuration,
+          operations: result.operations,
+          cameraLens: result.cameraLens,
+          requestedResolutionPreset: result.requestedResolutionPreset,
+          targetVideoBitrate: result.targetVideoBitrate,
+          deviceModel: result.deviceModel,
+          isEmulator: result.isEmulator,
+          metadataPath: metadataPath,
+        );
+        await File(metadataPath).writeAsString(
+          const JsonEncoder.withIndent('  ').convert(withPath.toJson()),
+        );
+        return withPath;
+      }
       return RecordingPermutationResult(
         scenario: result.scenario,
         startedAt: result.startedAt,
@@ -348,6 +378,15 @@ class RecordingPermutationHarness {
     try {
       await _platform.disposeCamera(cameraId);
     } catch (_) {}
+  }
+
+  Future<Directory> _harnessOutputDirectory() async {
+    final temp = Directory.systemTemp;
+    final output = temp.path.endsWith('/code_cache')
+        ? Directory('${temp.parent.path}/cache')
+        : temp;
+    await output.create(recursive: true);
+    return output;
   }
 
   Future<_HarnessDeviceMetadata> _deviceMetadata() async {

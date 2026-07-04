@@ -47,10 +47,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.view.TextureRegistry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import java.io.File
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
@@ -58,17 +54,35 @@ import java.util.concurrent.TimeUnit
 import java.nio.ByteBuffer
 
 class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
+    private companion object {
+        const val STOP_FINALIZE_TIMEOUT_MS = 10_000L
+    }
+
     private lateinit var channel: MethodChannel
     private var activity: Activity? = null
     private var flutterPluginBinding: FlutterPlugin.FlutterPluginBinding? = null
     private val cameras = mutableMapOf<Int, CameraInstance>()
     private var nextCameraId = 0
     private val executor = Executors.newSingleThreadExecutor()
+    private val mainHandler: Handler by lazy { Handler(Looper.getMainLooper()) }
     private val eventChannels = mutableMapOf<Int, EventChannel>()
     private val streamHandlers = mutableMapOf<Int, RecordingStateStreamHandler>()
     private val audioEventChannels = mutableMapOf<Int, EventChannel>()
     private val audioStreamHandlers = mutableMapOf<Int, AudioDeviceStreamHandler>()
     private var orientationListener: OrientationListener? = null
+
+    data class PendingStop(
+        val result: Result,
+        val outputFile: File,
+        val timeoutRunnable: Runnable
+    )
+
+    data class CompletedFinalize(
+        val outputFile: File,
+        val error: Int,
+        val hasValidData: Boolean,
+        val hasCause: Boolean
+    )
 
     data class CameraInstance(
         val cameraId: Int,
@@ -86,7 +100,13 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         var isSwitching: Boolean = false,
         var switchingHandler: (() -> Unit)? = null,
         var isPaused: Boolean = false,
-        var pauseResumeHandler: (() -> Unit)? = null
+        var pendingPauseResult: Result? = null,
+        var pendingResumeResult: Result? = null,
+        var pendingStop: PendingStop? = null,
+        var completedFinalize: CompletedFinalize? = null,
+        var pauseCount: Int = 0,
+        var resumeCount: Int = 0,
+        var switchCount: Int = 0
     )
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -466,13 +486,23 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
 
         try {
-            cameraInstance.segmentFiles.clear()
-            cameraInstance.currentSegmentIndex = 0
+            if (
+                cameraInstance.recording != null ||
+                cameraInstance.pendingStop != null ||
+                cameraInstance.completedFinalize != null
+            ) {
+                result.error(
+                    "RECORDING_IN_PROGRESS",
+                    "Camera is already recording",
+                    recordingDiagnostics(cameraInstance, "start_recording")
+                )
+                return
+            }
 
-            val file = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_0.mp4")
+            resetRecordingState(cameraInstance)
+
+            val file = File(activity.cacheDir, "recording_${System.currentTimeMillis()}.mp4")
             cameraInstance.recordingURL = file.absolutePath
-            cameraInstance.segmentFiles.add(file)
-            cameraInstance.currentSegmentIndex = 1
 
             val outputOptions = FileOutputOptions.Builder(file).build()
 
@@ -484,12 +514,9 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 .withAudioEnabled()
                 .start(ContextCompat.getMainExecutor(activity)) { event ->
                     when (event) {
-                        is VideoRecordEvent.Finalize -> {
-                            cameraInstance.switchingHandler?.let { handler ->
-                                cameraInstance.switchingHandler = null
-                                handler()
-                            }
-                        }
+                        is VideoRecordEvent.Pause -> completePause(cameraInstance)
+                        is VideoRecordEvent.Resume -> completeResume(cameraInstance)
+                        is VideoRecordEvent.Finalize -> handleFinalize(cameraInstance, event)
                         else -> {}
                     }
                 }
@@ -497,7 +524,12 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             cameraInstance.recording = recording
             result.success(null)
         } catch (e: Exception) {
-            result.error("RECORDING_ERROR", e.message, null)
+            resetRecordingState(cameraInstance)
+            result.error(
+                "RECORDING_ERROR",
+                e.message,
+                recordingDiagnostics(cameraInstance, "start_recording")
+            )
         }
     }
 
@@ -508,8 +540,39 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        if (cameraInstance.pendingStop != null) {
+            result.error(
+                "STOP_IN_PROGRESS",
+                "Recording stop is already in progress",
+                recordingDiagnostics(cameraInstance, "pause_recording")
+            )
+            return
+        }
+
         if (cameraInstance.recording == null) {
-            result.error("NOT_RECORDING", "No active recording", null)
+            result.error(
+                "NOT_RECORDING",
+                "No active recording",
+                recordingDiagnostics(cameraInstance, "pause_recording")
+            )
+            return
+        }
+
+        if (cameraInstance.pendingPauseResult != null) {
+            result.error(
+                "PAUSE_IN_PROGRESS",
+                "Recording pause is already in progress",
+                recordingDiagnostics(cameraInstance, "pause_recording")
+            )
+            return
+        }
+
+        if (cameraInstance.pendingResumeResult != null) {
+            result.error(
+                "RESUME_IN_PROGRESS",
+                "Recording resume is already in progress",
+                recordingDiagnostics(cameraInstance, "pause_recording")
+            )
             return
         }
 
@@ -518,40 +581,16 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        val activity = this.activity ?: run {
-            result.error("NO_ACTIVITY", "Activity not available", null)
-            return
-        }
-
-        cameraInstance.isPaused = true
-        val recording = cameraInstance.recording!!
-        cameraInstance.recording = null
-
-        cameraInstance.recordingURL?.let { url ->
-            if (url.isNotEmpty()) {
-                cameraInstance.segmentFiles.add(File(url))
-            }
-        }
-        cameraInstance.recordingURL = null
-
-        var hasCompleted = false
-        cameraInstance.pauseResumeHandler = {
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.pauseResumeHandler = null
-                result.success(null)
-            }
-        }
-
-        recording.stop()
-
-        GlobalScope.launch(Dispatchers.Main) {
-            delay(3000)
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.pauseResumeHandler = null
-                result.success(null)
-            }
+        try {
+            cameraInstance.pendingPauseResult = result
+            cameraInstance.recording!!.pause()
+        } catch (e: Exception) {
+            cameraInstance.pendingPauseResult = null
+            result.error(
+                "PAUSE_ERROR",
+                e.message,
+                recordingDiagnostics(cameraInstance, "pause_recording")
+            )
         }
     }
 
@@ -562,60 +601,61 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        if (cameraInstance.pendingStop != null) {
+            result.error(
+                "STOP_IN_PROGRESS",
+                "Recording stop is already in progress",
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
+            return
+        }
+
+        if (cameraInstance.recording == null) {
+            result.error(
+                "NOT_RECORDING",
+                "No active recording",
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
+            return
+        }
+
+        if (cameraInstance.pendingResumeResult != null) {
+            result.error(
+                "RESUME_IN_PROGRESS",
+                "Recording resume is already in progress",
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
+            return
+        }
+
+        if (cameraInstance.pendingPauseResult != null) {
+            result.error(
+                "PAUSE_IN_PROGRESS",
+                "Recording pause is already in progress",
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
+            return
+        }
+
         if (!cameraInstance.isPaused) {
-            result.error("NOT_PAUSED", "Recording is not paused", null)
+            result.error(
+                "NOT_PAUSED",
+                "Recording is not paused",
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
             return
         }
-
-        val activity = this.activity ?: run {
-            result.error("NO_ACTIVITY", "Activity not available", null)
-            return
-        }
-
-        val videoCapture = cameraInstance.videoCapture ?: run {
-            result.error("NOT_INITIALIZED", "Camera not initialized", null)
-            return
-        }
-
-        val lensDirection = cameraInstance.cameraDescription?.get("lensDirection") as? String ?: "back"
 
         try {
-            cameraInstance.isPaused = false
-
-            val segmentFile = File(activity.cacheDir, "segment_${System.currentTimeMillis()}_${cameraInstance.currentSegmentIndex}.mp4")
-            cameraInstance.currentSegmentIndex++
-
-            val outputOptions = FileOutputOptions.Builder(segmentFile).build()
-
-            val resumeRotation = orientationListener?.getRotation() ?: Surface.ROTATION_0
-            videoCapture.targetRotation = resumeRotation
-
-            val recording = videoCapture.output
-                .prepareRecording(activity, outputOptions)
-                .withAudioEnabled()
-                .start(ContextCompat.getMainExecutor(activity)) { event ->
-                    when (event) {
-                        is VideoRecordEvent.Finalize -> {
-                            cameraInstance.recordingURL?.let { url ->
-                                if (url.isNotEmpty() && !cameraInstance.segmentFiles.any { it.absolutePath == url }) {
-                                    cameraInstance.segmentFiles.add(File(url))
-                                }
-                            }
-                            cameraInstance.pauseResumeHandler?.let { handler ->
-                                cameraInstance.pauseResumeHandler = null
-                                handler()
-                            }
-                        }
-                        else -> {}
-                    }
-                }
-
-            cameraInstance.recording = recording
-            cameraInstance.recordingURL = segmentFile.absolutePath
-
-            result.success(null)
+            cameraInstance.pendingResumeResult = result
+            cameraInstance.recording!!.resume()
         } catch (e: Exception) {
-            result.error("RESUME_ERROR", e.message, null)
+            cameraInstance.pendingResumeResult = null
+            result.error(
+                "RESUME_ERROR",
+                e.message,
+                recordingDiagnostics(cameraInstance, "resume_recording")
+            )
         }
     }
 
@@ -626,58 +666,278 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        val recording = cameraInstance.recording
+        if (cameraInstance.pendingStop != null) {
+            result.error(
+                "STOP_IN_PROGRESS",
+                "Recording stop is already in progress",
+                recordingDiagnostics(cameraInstance, "stop_recording")
+            )
+            return
+        }
 
-        if (recording != null) {
-            try {
-                recording.stop()
+        cameraInstance.completedFinalize?.let { completedFinalize ->
+            completeStopFromFinalize(
+                cameraInstance = cameraInstance,
+                result = result,
+                outputFile = completedFinalize.outputFile,
+                finalizeError = completedFinalize.error,
+                hasValidData = completedFinalize.hasValidData,
+                hasCause = completedFinalize.hasCause,
+                stage = "stop_after_finalize"
+            )
+            return
+        }
+
+        val recording = cameraInstance.recording ?: run {
+            result.error(
+                "NO_RECORDING",
+                "No active recording",
+                recordingDiagnostics(cameraInstance, "stop_recording")
+            )
+            return
+        }
+
+        val outputFile = cameraInstance.recordingURL
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { File(it) }
+        if (outputFile == null) {
+            result.error(
+                "STOP_OUTPUT_MISSING",
+                "Recording output path is missing",
+                recordingDiagnostics(cameraInstance, "stop_recording")
+            )
+            return
+        }
+
+        val timeoutRunnable = Runnable {
+            if (cameraInstance.pendingStop?.result == result) {
+                val outputExists = outputFile.exists()
+                val outputHasData = outputFileHasData(outputFile)
+                cameraInstance.pendingStop = null
+                failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_TIMEOUT)
                 cameraInstance.recording = null
-
-                cameraInstance.recordingURL?.let { url ->
-                    if (url.isNotEmpty()) {
-                        cameraInstance.segmentFiles.add(File(url))
-                    }
-                }
                 cameraInstance.recordingURL = null
-            } catch (e: Exception) {
-                cleanupSegmentFiles(cameraInstance.segmentFiles)
-                cameraInstance.segmentFiles.clear()
-                cameraInstance.currentSegmentIndex = 0
                 cameraInstance.isPaused = false
-                result.error("STOP_ERROR", e.message, null)
-                return
+                result.error(
+                    RecordingFinalizeContract.STOP_TIMEOUT,
+                    "Timed out waiting for CameraX finalize",
+                    recordingDiagnostics(
+                        cameraInstance,
+                        "stop_finalize_timeout",
+                        mapOf(
+                            "native_output_exists" to outputExists,
+                            "native_output_has_data" to outputHasData
+                        )
+                    )
+                )
             }
         }
 
-        if (cameraInstance.segmentFiles.isEmpty()) {
-            result.error("NO_RECORDING", "No recording segments found", null)
-            return
-        }
+        cameraInstance.pendingStop = PendingStop(result, outputFile, timeoutRunnable)
+        mainHandler.postDelayed(timeoutRunnable, STOP_FINALIZE_TIMEOUT_MS)
 
+        try {
+            recording.stop()
+            cameraInstance.recording = null
+        } catch (e: Exception) {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            cameraInstance.pendingStop = null
+            cameraInstance.recording = null
+            cameraInstance.recordingURL = null
+            cameraInstance.isPaused = false
+            deleteQuietly(outputFile)
+            result.error(
+                "STOP_ERROR",
+                e.message,
+                recordingDiagnostics(cameraInstance, "stop_recording")
+            )
+        }
+    }
+
+    private fun completePause(cameraInstance: CameraInstance) {
+        cameraInstance.isPaused = true
+        cameraInstance.pauseCount += 1
+        cameraInstance.pendingPauseResult?.success(null)
+        cameraInstance.pendingPauseResult = null
+    }
+
+    private fun completeResume(cameraInstance: CameraInstance) {
         cameraInstance.isPaused = false
+        cameraInstance.resumeCount += 1
+        cameraInstance.pendingResumeResult?.success(null)
+        cameraInstance.pendingResumeResult = null
+    }
 
-        if (cameraInstance.segmentFiles.size == 1) {
-            val outputFile = cameraInstance.segmentFiles[0]
-            cameraInstance.segmentFiles.clear()
-            cameraInstance.currentSegmentIndex = 0
-            result.success(outputFile.absolutePath)
+    private fun handleFinalize(
+        cameraInstance: CameraInstance,
+        event: VideoRecordEvent.Finalize
+    ) {
+        cameraInstance.switchingHandler?.let { handler ->
+            cameraInstance.switchingHandler = null
+            handler()
             return
         }
 
-        GlobalScope.launch(Dispatchers.IO) {
-            try {
-                val mergedFile = mergeSegments(cameraInstance.segmentFiles)
-                cleanupSegmentFiles(cameraInstance.segmentFiles)
-                cameraInstance.segmentFiles.clear()
-                cameraInstance.currentSegmentIndex = 0
-                result.success(mergedFile.absolutePath)
-            } catch (e: Exception) {
-                cleanupSegmentFiles(cameraInstance.segmentFiles)
-                cameraInstance.segmentFiles.clear()
-                cameraInstance.currentSegmentIndex = 0
-                result.error("MERGE_ERROR", e.message, null)
+        val pendingStop = cameraInstance.pendingStop ?: run {
+            cacheSpontaneousFinalize(cameraInstance, event)
+            return
+        }
+        mainHandler.removeCallbacks(pendingStop.timeoutRunnable)
+        cameraInstance.pendingStop = null
+        failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
+
+        completeStopFromFinalize(
+            cameraInstance = cameraInstance,
+            result = pendingStop.result,
+            outputFile = pendingStop.outputFile,
+            finalizeError = event.error,
+            hasValidData = outputHasValidData(event, pendingStop.outputFile),
+            hasCause = event.cause != null,
+            stage = "stop_finalize"
+        )
+    }
+
+    private fun cacheSpontaneousFinalize(
+        cameraInstance: CameraInstance,
+        event: VideoRecordEvent.Finalize
+    ) {
+        val outputFile = cameraInstance.recordingURL
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { File(it) }
+        if (outputFile != null) {
+            cameraInstance.completedFinalize = CompletedFinalize(
+                outputFile = outputFile,
+                error = event.error,
+                hasValidData = outputHasValidData(event, outputFile),
+                hasCause = event.cause != null
+            )
+        }
+        failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
+        cameraInstance.recording = null
+        cameraInstance.recordingURL = null
+        cameraInstance.isPaused = false
+    }
+
+    private fun completeStopFromFinalize(
+        cameraInstance: CameraInstance,
+        result: Result,
+        outputFile: File,
+        finalizeError: Int,
+        hasValidData: Boolean,
+        hasCause: Boolean,
+        stage: String
+    ) {
+        val decision = RecordingFinalizeContract.decide(finalizeError, hasValidData)
+        val details = recordingDiagnostics(
+            cameraInstance,
+            stage,
+            mapOf(
+                "native_finalize_code" to finalizeError,
+                "native_finalize_error" to RecordingFinalizeContract.errorName(finalizeError),
+                "native_output_has_data" to hasValidData,
+                "native_has_cause" to hasCause
+            )
+        )
+
+        cameraInstance.recording = null
+        cameraInstance.recordingURL = null
+        cameraInstance.completedFinalize = null
+        cameraInstance.isPaused = false
+        cameraInstance.segmentFiles.clear()
+        cameraInstance.currentSegmentIndex = 0
+
+        when (decision.action) {
+            FinalizeAction.RETURN_PATH -> result.success(outputFile.absolutePath)
+            FinalizeAction.RETURN_NULL -> {
+                if (decision.deletePartial) {
+                    deleteQuietly(outputFile)
+                }
+                result.success(null)
+            }
+            FinalizeAction.THROW_ERROR -> {
+                if (decision.deletePartial) {
+                    deleteQuietly(outputFile)
+                }
+                result.error(
+                    decision.errorCode ?: "STOP_FINALIZE_ERROR",
+                    decision.message ?: "CameraX failed to finalize recording",
+                    details
+                )
             }
         }
+    }
+
+    private fun failPendingPauseResume(cameraInstance: CameraInstance, code: String) {
+        cameraInstance.pendingPauseResult?.error(
+            code,
+            "Recording stopped before pause completed",
+            recordingDiagnostics(cameraInstance, "pause_recording")
+        )
+        cameraInstance.pendingPauseResult = null
+        cameraInstance.pendingResumeResult?.error(
+            code,
+            "Recording stopped before resume completed",
+            recordingDiagnostics(cameraInstance, "resume_recording")
+        )
+        cameraInstance.pendingResumeResult = null
+    }
+
+    private fun resetRecordingState(cameraInstance: CameraInstance) {
+        cameraInstance.recording = null
+        cameraInstance.recordingURL = null
+        cameraInstance.segmentFiles.clear()
+        cameraInstance.currentSegmentIndex = 0
+        cameraInstance.isSwitching = false
+        cameraInstance.switchingHandler = null
+        cameraInstance.isPaused = false
+        cameraInstance.pendingPauseResult = null
+        cameraInstance.pendingResumeResult = null
+        cameraInstance.pendingStop = null
+        cameraInstance.completedFinalize = null
+        cameraInstance.pauseCount = 0
+        cameraInstance.resumeCount = 0
+        cameraInstance.switchCount = 0
+    }
+
+    private fun outputFileHasData(file: File): Boolean = file.exists() && file.length() > 0L
+
+    private fun outputHasValidData(event: VideoRecordEvent.Finalize, file: File): Boolean {
+        val stats = event.recordingStats
+        return RecordingFinalizeContract.hasValidData(
+            outputExists = file.exists(),
+            outputLengthBytes = file.length(),
+            recordedBytes = stats.numBytesRecorded,
+            recordedDurationNanos = stats.recordedDurationNanos
+        )
+    }
+
+    private fun deleteQuietly(file: File) {
+        try {
+            if (file.exists()) {
+                file.delete()
+            }
+        } catch (_: Exception) {
+        }
+    }
+
+    private fun recordingDiagnostics(
+        cameraInstance: CameraInstance,
+        stage: String,
+        extra: Map<String, Any?> = emptyMap()
+    ): Map<String, Any?> {
+        return mapOf(
+            "native_stage" to stage,
+            "native_has_recording" to (cameraInstance.recording != null),
+            "native_has_pending_stop" to (cameraInstance.pendingStop != null),
+            "native_has_completed_finalize" to (cameraInstance.completedFinalize != null),
+            "native_is_paused" to cameraInstance.isPaused,
+            "native_is_switching" to cameraInstance.isSwitching,
+            "native_audio_device_type" to "unknown",
+            "native_pause_count" to cameraInstance.pauseCount,
+            "native_resume_count" to cameraInstance.resumeCount,
+            "native_switch_count" to cameraInstance.switchCount,
+            "native_segment_count" to cameraInstance.segmentFiles.size
+        ) + extra
     }
 
     private fun isMultiCamSupported(result: Result) {
@@ -686,74 +946,15 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
     private fun canSwitchCamera(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
-        val cameraInstance = cameras[cameraId]
-
-        if (cameraInstance == null) {
+        if (!cameras.containsKey(cameraId)) {
             result.error("INVALID_CAMERA", "Camera not found", null)
             return
         }
 
-        val activity = this.activity
-        if (activity == null) {
-            result.success(false)
-            return
-        }
-
-        val hasFrontCamera = try {
-            val cameraManager = activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            cameraManager.cameraIdList.any { id ->
-                val characteristics = cameraManager.getCameraCharacteristics(id)
-                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-            }
-        } catch (e: Exception) {
-            false
-        }
-
-        val hasBackCamera = try {
-            val cameraManager = activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-            cameraManager.cameraIdList.any { id ->
-                val characteristics = cameraManager.getCameraCharacteristics(id)
-                characteristics.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-            }
-        } catch (e: Exception) {
-            false
-        }
-
-        val canSwitch = cameraInstance.recording != null &&
-                        !cameraInstance.isSwitching &&
-                        !cameraInstance.isPaused &&
-                        hasFrontCamera &&
-                        hasBackCamera
-
-        result.success(canSwitch)
+        result.success(false)
     }
 
     private fun canSwitchCurrentCamera(result: Result) {
-        val activity = this.activity
-        if (activity == null) {
-            result.success(false)
-            return
-        }
-
-        val cameraManager = activity.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val hasFront = cameraManager.cameraIdList.any { id ->
-            cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
-        }
-        val hasBack = cameraManager.cameraIdList.any { id ->
-            cameraManager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-        }
-
-        if (!hasFront || !hasBack) {
-            result.success(false)
-            return
-        }
-
-        for (instance in cameras.values) {
-            if (instance.recording != null && !instance.isSwitching && !instance.isPaused) {
-                result.success(true)
-                return
-            }
-        }
         result.success(false)
     }
 
@@ -764,58 +965,12 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        if (cameraInstance.recording == null) {
-            result.error("NOT_RECORDING", "Camera not currently recording", null)
-            return
-        }
-
-        if (cameraInstance.isSwitching) {
-            result.error("SWITCH_IN_PROGRESS", "Camera switch already in progress", null)
-            return
-        }
-
-        if (cameraInstance.isPaused) {
-            result.error("PAUSED", "Cannot switch camera while paused", null)
-            return
-        }
-
-        val activity = this.activity ?: run {
-            result.error("NO_ACTIVITY", "Activity not available", null)
-            return
-        }
-
-        cameraInstance.isSwitching = true
-
-        val recording = cameraInstance.recording!!
-        cameraInstance.recording = null
-
-        cameraInstance.recordingURL?.let { url ->
-            cameraInstance.segmentFiles.add(File(url))
-        }
-        cameraInstance.recordingURL = null
-
-        val newLensDirection = if ((cameraInstance.cameraDescription?.get("lensDirection") as? String) == "front") "back" else "front"
-        val actualCameraId = cameraId!!
-
-        var hasCompleted = false
-        cameraInstance.switchingHandler = {
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.switchingHandler = null
-                performCameraSwitch(actualCameraId, cameraInstance, newLensDirection, activity, result)
-            }
-        }
-
-        recording.stop()
-
-        GlobalScope.launch(Dispatchers.Main) {
-            delay(3000)
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.switchingHandler = null
-                performCameraSwitch(actualCameraId, cameraInstance, newLensDirection, activity, result)
-            }
-        }
+        result.error(
+            "SWITCH_REQUIRES_PERSISTENT_RECORDING",
+            "Android switch while recording is disabled until persistent recording is enabled",
+            recordingDiagnostics(cameraInstance, "switch_camera")
+        )
+        return
     }
 
     private fun performCameraSwitch(

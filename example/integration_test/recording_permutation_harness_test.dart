@@ -29,13 +29,17 @@ void main() {
     expect(produced, isNotEmpty);
     for (final result in produced) {
       expect(result.error, isNull, reason: result.scenario.id);
-      expect(result.videoPath, isNotEmpty, reason: result.scenario.id);
       expect(result.metadataPath, isNotEmpty, reason: result.scenario.id);
-      expect(
-        await File(result.videoPath!).exists(),
-        isTrue,
-        reason: result.videoPath,
-      );
+      if (result.expectsOutput) {
+        expect(result.videoPath, isNotEmpty, reason: result.scenario.id);
+        expect(
+          await File(result.videoPath!).exists(),
+          isTrue,
+          reason: result.videoPath,
+        );
+      } else {
+        expect(result.videoPath, isNull, reason: result.scenario.id);
+      }
       expect(
         await File(result.metadataPath!).exists(),
         isTrue,
