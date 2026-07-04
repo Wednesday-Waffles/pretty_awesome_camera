@@ -166,10 +166,9 @@ void _assertExpectedResolution(Map metadata, int videoWidth, int videoHeight) {
 
   final actualShortSide = math.min(videoWidth, videoHeight);
   final minimum = (expectedShortSide * (1 - _resolutionToleranceRatio)).round();
-  final maximum = (expectedShortSide * (1 + _resolutionToleranceRatio)).round();
-  if (actualShortSide < minimum || actualShortSide > maximum) {
+  if (actualShortSide < minimum) {
     throw StateError(
-      'Expected $preset short side near ${expectedShortSide}px, got '
+      'Expected $preset short side at least near ${expectedShortSide}px, got '
       '${videoWidth}x$videoHeight.',
     );
   }
