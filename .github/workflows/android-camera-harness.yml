@@ -51,37 +51,7 @@ jobs:
           emulator-boot-timeout: 1200
           disable-animations: true
           script: |
-            set -u
-
-            grant_permissions() {
-              for _ in $(seq 1 900); do
-                if adb shell pm path com.example.pretty_awesome_camera_example >/dev/null 2>&1; then
-                  adb shell pm grant com.example.pretty_awesome_camera_example android.permission.CAMERA >/dev/null 2>&1 || true
-                  adb shell pm grant com.example.pretty_awesome_camera_example android.permission.RECORD_AUDIO >/dev/null 2>&1 || true
-                  return 0
-                fi
-                sleep 1
-              done
-              echo "::warning::Example app was not installed before the permission grant loop expired"
-              return 0
-            }
-
-            grant_permissions &
-            grant_pid="$!"
-
-            cd example
-            timeout 25m flutter test integration_test/recording_permutation_harness_test.dart -d emulator-5554 --dart-define=CAMERA_HARNESS_SCENARIOS=record_stop,rapid_start_stop
-            test_status="$?"
-            cd ..
-
-            kill "$grant_pid" >/dev/null 2>&1 || true
-            wait "$grant_pid" || true
-            mkdir -p build/camera-harness-output
-            adb exec-out run-as com.example.pretty_awesome_camera_example sh -c 'cd cache && tar cf - *.mp4 *.pretty_camera_harness.json 2>/dev/null' | tar xf - -C build/camera-harness-output || true
-            if [ "$test_status" -ne 0 ]; then
-              exit "$test_status"
-            fi
-            dart run tool/ffprobe_recording_outputs.dart build/camera-harness-output
+            bash -lc 'set -u; grant_permissions() { for _ in $(seq 1 900); do if adb shell pm path com.example.pretty_awesome_camera_example >/dev/null 2>&1; then adb shell pm grant com.example.pretty_awesome_camera_example android.permission.CAMERA >/dev/null 2>&1 || true; adb shell pm grant com.example.pretty_awesome_camera_example android.permission.RECORD_AUDIO >/dev/null 2>&1 || true; return 0; fi; sleep 1; done; echo "::warning::Example app was not installed before the permission grant loop expired"; return 0; }; grant_permissions & grant_pid="$!"; cd example; timeout 25m flutter test integration_test/recording_permutation_harness_test.dart -d emulator-5554 --dart-define=CAMERA_HARNESS_SCENARIOS=record_stop,rapid_start_stop; test_status="$?"; cd ..; kill "$grant_pid" >/dev/null 2>&1 || true; wait "$grant_pid" || true; mkdir -p build/camera-harness-output; adb exec-out run-as com.example.pretty_awesome_camera_example sh -c "cd cache && tar cf - *.mp4 *.pretty_camera_harness.json 2>/dev/null" | tar xf - -C build/camera-harness-output || true; if [ "$test_status" -ne 0 ]; then exit "$test_status"; fi; dart run tool/ffprobe_recording_outputs.dart build/camera-harness-output'
 
       - name: Upload camera harness outputs
         if: always()
