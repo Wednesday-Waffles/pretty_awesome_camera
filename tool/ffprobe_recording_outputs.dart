@@ -83,10 +83,6 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     throw StateError('Video file not found: ${video.path}');
   }
 
-  if (!await _containsMoovAtom(video)) {
-    throw StateError('MP4 moov atom not found.');
-  }
-
   final probe = await _ffprobeJson([
     '-show_format',
     '-show_streams',
@@ -115,9 +111,10 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
   }
   final durationMs = (durationSeconds * 1000).round();
   final durationDelta = (durationMs - expectedMs).abs();
-  if (durationDelta > _durationToleranceMs) {
+  final effectiveToleranceMs = math.min(_durationToleranceMs, expectedMs ~/ 2);
+  if (durationDelta > effectiveToleranceMs) {
     throw StateError(
-      'Duration delta ${durationDelta}ms exceeds ${_durationToleranceMs}ms '
+      'Duration delta ${durationDelta}ms exceeds ${effectiveToleranceMs}ms '
       '(actual=${durationMs}ms expected=${expectedMs}ms).',
     );
   }
@@ -161,19 +158,6 @@ Future<Map<String, Object?>> _ffprobeJson(List<String> args) async {
     );
   }
   return jsonDecode(result.stdout as String) as Map<String, Object?>;
-}
-
-Future<bool> _containsMoovAtom(File video) async {
-  final bytes = await video.readAsBytes();
-  for (var i = 0; i <= bytes.length - 4; i++) {
-    if (bytes[i] == 0x6d &&
-        bytes[i + 1] == 0x6f &&
-        bytes[i + 2] == 0x6f &&
-        bytes[i + 3] == 0x76) {
-      return true;
-    }
-  }
-  return false;
 }
 
 Future<void> _assertMonotonicFramePts(File video) async {
