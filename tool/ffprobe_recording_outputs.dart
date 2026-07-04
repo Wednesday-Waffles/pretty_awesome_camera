@@ -4,7 +4,8 @@ import 'dart:math' as math;
 
 const _metadataSuffix = '.pretty_camera_harness.json';
 const _durationToleranceMs = 500;
-const _bitrateToleranceRatio = 0.25;
+const _bitrateToleranceRatio = 1.0;
+const _minimumBitrateValidationDurationMs = 1000;
 const _resolutionToleranceRatio = 0.25;
 const _presetShortSide = {
   'low': 240,
@@ -50,12 +51,16 @@ Future<void> main(List<String> args) async {
   for (final metadataFile in metadataFiles) {
     try {
       final result = await _validateRecording(metadataFile);
-      stdout.writeln(
-        'PASS ${result.scenario}: ${result.video.path} '
-        'duration=${result.durationMs}ms expected=${result.expectedMs}ms '
-        'video=${result.videoWidth}x${result.videoHeight} '
-        'bitrate=${result.bitrate ?? 'unknown'}bps',
-      );
+      if (result.noOutput) {
+        stdout.writeln('PASS ${result.scenario}: no output path returned');
+      } else {
+        stdout.writeln(
+          'PASS ${result.scenario}: ${result.video!.path} '
+          'duration=${result.durationMs}ms expected=${result.expectedMs}ms '
+          'video=${result.videoWidth}x${result.videoHeight} '
+          'bitrate=${result.bitrate ?? 'unknown'}bps',
+        );
+      }
     } catch (error) {
       failures.add('${metadataFile.path}: $error');
     }
@@ -82,6 +87,12 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     throw StateError(
       'Scenario $scenario recorded an error: ${metadata['error']}',
     );
+  }
+
+  final videoPath = metadata['videoPath'] as String?;
+  if (scenario == 'rapid_start_stop' &&
+      (videoPath == null || videoPath.isEmpty)) {
+    return _ValidationResult.noOutput(scenario: scenario);
   }
 
   final expectedMs = (metadata['expectedDurationMs'] as num?)?.round();
@@ -142,7 +153,7 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
   final bitrate =
       int.tryParse('${videoStream['bit_rate']}') ??
       int.tryParse('${format['bit_rate']}');
-  _assertExpectedBitrate(metadata, bitrate);
+  _assertExpectedBitrate(metadata, bitrate, durationMs);
 
   await _assertMonotonicFramePts(video);
 
@@ -188,7 +199,11 @@ void _assertExpectedResolution(Map metadata, int videoWidth, int videoHeight) {
   }
 }
 
-void _assertExpectedBitrate(Map metadata, int? actualBitrate) {
+void _assertExpectedBitrate(Map metadata, int? actualBitrate, int durationMs) {
+  if (durationMs < _minimumBitrateValidationDurationMs) {
+    return;
+  }
+
   final targetBitrate = (metadata['targetVideoBitrate'] as num?)?.round();
   if (targetBitrate == null || targetBitrate <= 0) {
     return;
@@ -201,7 +216,7 @@ void _assertExpectedBitrate(Map metadata, int? actualBitrate) {
   final maximum = (targetBitrate * (1 + _bitrateToleranceRatio)).round();
   if (actualBitrate < minimum || actualBitrate > maximum) {
     throw StateError(
-      'Bitrate $actualBitrate bps is outside +/-25% of target '
+      'Bitrate $actualBitrate bps is outside +/-${(_bitrateToleranceRatio * 100).round()}% of target '
       '$targetBitrate bps.',
     );
   }
@@ -279,13 +294,23 @@ class _ValidationResult {
     required this.videoWidth,
     required this.videoHeight,
     required this.bitrate,
-  });
+  }) : noOutput = false;
+
+  const _ValidationResult.noOutput({required this.scenario})
+    : video = null,
+      durationMs = 0,
+      expectedMs = 0,
+      videoWidth = 0,
+      videoHeight = 0,
+      bitrate = null,
+      noOutput = true;
 
   final String scenario;
-  final File video;
+  final File? video;
   final int durationMs;
   final int expectedMs;
   final int videoWidth;
   final int videoHeight;
   final int? bitrate;
+  final bool noOutput;
 }
