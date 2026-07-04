@@ -35,8 +35,7 @@ class SwitchingCapability {
   /// 1. On iOS: Check if AVCaptureMultiCamSession.isMultiCamSupported is true.
   ///    - If true, use iosOptimizedMultiCam (fast switching without merge)
   ///    - If false, use fallbackSegmentMerge (slower but reliable segment merge)
-  /// 2. On Android: Always use androidFallbackSegmentMerge in v4.1.
-  ///    - Future v4.2 may add optimized path after validation.
+  /// 2. On Android: Use CameraX persistent recording across camera rebinds.
   ///
   /// Throws [CameraException] if capability detection fails.
   Future<SwitchingPath> _detectSwitchingPath() async {
@@ -98,17 +97,15 @@ class SwitchingCapability {
 
   /// Detects the optimal switching path on Android.
   ///
-  /// In v4.1, always returns the fallback path.
-  /// Future v4.2 may use [_detectAndroidConcurrentCameras] to evaluate
-  /// optimized path support.
+  /// Android uses CameraX persistent recording: one recording survives
+  /// `unbindAll()` and rebinds the same `VideoCapture` to the next camera.
   Future<SwitchingPath> _detectAndroidSwitchingPath() async {
-    // v4.1: Always use fallback path on Android
     developer.log(
-      'Android switching path selected: androidFallbackSegmentMerge (v4.1 constraint)',
+      'Android switching path selected: androidPersistentRecording',
       name: 'pretty_awesome_camera.switching',
     );
 
-    return SwitchingPath.androidFallbackSegmentMerge;
+    return SwitchingPath.androidPersistentRecording;
   }
 
   /// Future-facing helper for Android concurrent camera detection.

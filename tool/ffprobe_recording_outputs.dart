@@ -60,7 +60,8 @@ Future<void> main(List<String> args) async {
           'PASS ${result.scenario}: ${result.video!.path} '
           'duration=${result.durationMs}ms expected=${result.expectedMs}ms '
           'video=${result.videoWidth}x${result.videoHeight} '
-          'bitrate=${result.bitrate ?? 'unknown'}bps',
+          'bitrate=${result.bitrate ?? 'unknown'}bps '
+          'fps=${result.averageFrameRate?.toStringAsFixed(2) ?? 'unknown'}',
         );
       }
     } catch (error) {
@@ -111,7 +112,7 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     '-show_format',
     '-show_streams',
     '-show_entries',
-    'format=duration,bit_rate:stream=index,codec_type,width,height,bit_rate',
+    'format=duration,bit_rate:stream=index,codec_type,width,height,bit_rate,avg_frame_rate',
     video.path,
   ]);
   final streams = (probe['streams'] as List? ?? const []).cast<Map>();
@@ -136,6 +137,7 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     throw StateError('ffprobe did not report video dimensions.');
   }
   _assertExpectedResolution(metadata, videoWidth, videoHeight);
+  final averageFrameRate = _parseFrameRate(videoStream['avg_frame_rate']);
 
   final format = probe['format'] as Map? ?? const {};
   final durationSeconds = double.tryParse('${format['duration']}');
@@ -175,7 +177,25 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     videoWidth: videoWidth,
     videoHeight: videoHeight,
     bitrate: bitrate,
+    averageFrameRate: averageFrameRate,
   );
+}
+
+double? _parseFrameRate(Object? value) {
+  if (value == null) {
+    return null;
+  }
+  final raw = '$value';
+  final parts = raw.split('/');
+  if (parts.length == 2) {
+    final numerator = double.tryParse(parts[0]);
+    final denominator = double.tryParse(parts[1]);
+    if (numerator == null || denominator == null || denominator == 0) {
+      return null;
+    }
+    return numerator / denominator;
+  }
+  return double.tryParse(raw);
 }
 
 void _assertExpectedResolution(Map metadata, int videoWidth, int videoHeight) {
@@ -304,6 +324,7 @@ class _ValidationResult {
     required this.videoWidth,
     required this.videoHeight,
     required this.bitrate,
+    required this.averageFrameRate,
   }) : noOutput = false;
 
   const _ValidationResult.noOutput({required this.scenario})
@@ -313,6 +334,7 @@ class _ValidationResult {
       videoWidth = 0,
       videoHeight = 0,
       bitrate = null,
+      averageFrameRate = null,
       noOutput = true;
 
   final String scenario;
@@ -322,5 +344,6 @@ class _ValidationResult {
   final int videoWidth;
   final int videoHeight;
   final int? bitrate;
+  final double? averageFrameRate;
   final bool noOutput;
 }
