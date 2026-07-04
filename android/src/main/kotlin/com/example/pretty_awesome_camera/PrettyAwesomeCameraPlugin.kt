@@ -476,7 +476,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     }
 
     private fun setZoom(call: MethodCall, result: Result) {
-    private fun setZoom(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
         val zoom = (call.argument<Any>("zoom") as? Number)?.toDouble()
 
@@ -905,7 +904,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             cameraInstance.recording = null
             cameraInstance.recordingURL = null
             cameraInstance.isPaused = false
-            cameraInstance.isSwitching = false
             finishDisposeCamera(cameraInstance.cameraId, cameraInstance, pendingDispose.result)
             return
         }
@@ -1290,6 +1288,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                     .build()
 
                 cameraProvider.unbindAll()
+                cameraInstance.camera = null
+                cameraInstance.preview = null
                 val camera = cameraProvider.bindToLifecycle(
                     activity as LifecycleOwner,
                     cameraSelector,
