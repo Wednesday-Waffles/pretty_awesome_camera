@@ -14,6 +14,7 @@ enum RecordingPermutationScenario {
   pauseResumeTwice,
   flipTwice,
   pauseResumeFlip,
+  flipPauseStop,
   pausedFlipUnsupported,
   rapidFlipFuzz,
   pauseStop,
@@ -29,6 +30,7 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
       RecordingPermutationScenario.pauseResumeTwice => 'pause_resume_twice',
       RecordingPermutationScenario.flipTwice => 'flip_twice',
       RecordingPermutationScenario.pauseResumeFlip => 'pause_resume_flip',
+      RecordingPermutationScenario.flipPauseStop => 'flip_pause_stop',
       RecordingPermutationScenario.pausedFlipUnsupported =>
         'paused_flip_unsupported',
       RecordingPermutationScenario.rapidFlipFuzz => 'rapid_flip_fuzz',
@@ -46,7 +48,9 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
         'Record -> pause x2 -> resume -> stop',
       RecordingPermutationScenario.flipTwice => 'Record -> flip x2 -> stop',
       RecordingPermutationScenario.pauseResumeFlip =>
-        'Record -> pause -> resume -> flip -> stop',
+        'Record -> pause -> resume -> blocked flip -> stop',
+      RecordingPermutationScenario.flipPauseStop =>
+        'Record -> flip -> pause -> resume -> stop',
       RecordingPermutationScenario.pausedFlipUnsupported =>
         'Record -> pause -> blocked flip -> resume -> stop',
       RecordingPermutationScenario.rapidFlipFuzz =>
@@ -228,8 +232,25 @@ class RecordingPermutationHarness {
           await Future<void>.delayed(shortClipDuration);
           pausedDuration += await _pauseAndResume(cameraId, operations);
           await Future<void>.delayed(shortClipDuration);
+          // Switching after a completed pause is blocked: CameraX rebuilds the
+          // video encoder on rebind and loses the pause timestamp adjustment,
+          // desyncing A/V by the paused duration.
+          try {
+            await _platform.switchCamera(cameraId);
+            throw StateError('switchCamera succeeded after pause history.');
+          } on CameraException catch (error) {
+            if (error.code != 'PAUSE_HISTORY_FLIP_UNSUPPORTED') {
+              rethrow;
+            }
+            operations.add('switchCamera:${error.code}');
+          }
+          await Future<void>.delayed(shortClipDuration);
+        case RecordingPermutationScenario.flipPauseStop:
+          await Future<void>.delayed(shortClipDuration);
           await _platform.switchCamera(cameraId);
           operations.add('switchCamera');
+          await Future<void>.delayed(shortClipDuration);
+          pausedDuration += await _pauseAndResume(cameraId, operations);
           await Future<void>.delayed(shortClipDuration);
         case RecordingPermutationScenario.pausedFlipUnsupported:
           await Future<void>.delayed(shortClipDuration);
@@ -452,6 +473,7 @@ class RecordingPermutationHarness {
       RecordingPermutationScenario.previewSwitchRecordStop ||
       RecordingPermutationScenario.flipTwice ||
       RecordingPermutationScenario.pauseResumeFlip ||
+      RecordingPermutationScenario.flipPauseStop ||
       RecordingPermutationScenario.pausedFlipUnsupported ||
       RecordingPermutationScenario.rapidFlipFuzz => true,
       _ => false,

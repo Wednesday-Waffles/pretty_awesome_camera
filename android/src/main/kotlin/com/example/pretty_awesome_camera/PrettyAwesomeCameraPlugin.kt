@@ -1165,6 +1165,22 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        // CameraX creates a NEW video encoder for each camera rebind during a
+        // persistent recording (Recorder.SetupVideoTask), and the replacement
+        // encoder starts with an empty pause ledger (EncoderImpl
+        // mTotalPausedDurationUs = 0) while the audio encoder keeps its pause
+        // adjustment. Switching after any completed pause therefore desyncs
+        // audio and video by the total prior paused duration. Present through
+        // CameraX 1.7.0-alpha02.
+        if (cameraInstance.recording != null && cameraInstance.pauseCount > 0) {
+            result.error(
+                "PAUSE_HISTORY_FLIP_UNSUPPORTED",
+                "Android does not support switching cameras after a recording has been paused",
+                recordingDiagnostics(cameraInstance, "switch_camera")
+            )
+            return
+        }
+
         val activity = this.activity ?: run {
             result.error(
                 "NO_ACTIVITY",
@@ -1231,7 +1247,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             cameraInstance.pendingPauseResult != null ||
             cameraInstance.pendingResumeResult != null ||
             cameraInstance.isSwitching ||
-            cameraInstance.isPaused
+            cameraInstance.isPaused ||
+            cameraInstance.pauseCount > 0
         ) {
             return false
         }
