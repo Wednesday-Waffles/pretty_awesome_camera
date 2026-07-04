@@ -112,27 +112,38 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     );
   }
 
-  /// Checks if the camera with the given ID can be switched during recording.
+  /// Checks if the camera with the given ID can be switched MID-RECORDING.
   ///
-  /// Returns true if the camera supports switching, false otherwise.
+  /// This intentionally reports the in-flight recording switch capability
+  /// only — it returns false whenever no recording is active (both
+  /// platforms), and on Android also once the active recording has pause
+  /// history. It does NOT answer "may [switchCamera] be called": preview
+  /// (not-recording) switches are always supported on both platforms even
+  /// while this returns false. Gate preview flip UI on camera availability,
+  /// not on this method.
+  ///
   /// Throws [CameraException] if the camera is not initialized.
   Future<bool> canSwitchCamera(int cameraId) {
     throw UnimplementedError('canSwitchCamera() has not been implemented.');
   }
 
-  /// Switches to the opposite camera during recording (front ↔ back).
+  /// Switches to the opposite camera (front ↔ back).
   ///
-  /// Returns the new texture ID and preview dimensions after switching.
-  /// Throws [CameraException] with code 'invalidState' if not currently recording.
+  /// Supported while previewing (not recording) and while actively
+  /// recording. Returns the new texture ID and preview dimensions after
+  /// switching.
   /// Throws [CameraException] with code 'switchInProgress' if a switch is already in progress.
+  /// Throws [CameraException] with code 'PAUSED_FLIP_UNSUPPORTED' on Android
+  /// while the recording is paused, and 'PAUSE_HISTORY_FLIP_UNSUPPORTED'
+  /// once the active recording has been paused at least once.
   Future<CameraInitializationResult> switchCamera(int cameraId) {
     throw UnimplementedError('switchCamera() has not been implemented.');
   }
 
-  /// Convenience getter to check if the current camera can be switched.
+  /// Convenience getter to check if any current camera can be switched
+  /// MID-RECORDING. Same semantics as [canSwitchCamera] — see its note about
+  /// preview switches.
   ///
-  /// This is a helper method that checks if camera switching is currently possible.
-  /// Returns true if a camera switch can be initiated, false otherwise.
   /// Throws [CameraException] if no camera is currently active.
   Future<bool> get canSwitchCurrentCamera {
     throw UnimplementedError(

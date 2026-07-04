@@ -80,7 +80,10 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       fallbackMessage: 'Failed to get build info',
     );
     if (result == null) {
-      return const {};
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null build info',
+      );
     }
     return Map<dynamic, dynamic>.from(
       result as Map,

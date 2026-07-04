@@ -1236,6 +1236,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         )
     }
 
+    // Reports the MID-RECORDING switch capability only, matching iOS
+    // (canSwitchCamera returns isRecording there). Preview switches are
+    // always supported and intentionally NOT reflected here — gate preview
+    // flip UI on camera availability, not on this method.
     private fun canSwitchCameraInstance(cameraInstance: CameraInstance): Boolean {
         val activity = this.activity ?: return false
         if (cameraInstance.recording == null) {

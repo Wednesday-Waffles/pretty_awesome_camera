@@ -1,3 +1,5 @@
+import java.util.concurrent.TimeUnit
+
 group = "com.example.pretty_awesome_camera"
 version = "1.0-SNAPSHOT"
 
@@ -35,8 +37,15 @@ val pluginGitSha: String = runCatching {
         .directory(projectDir)
         .redirectErrorStream(true)
         .start()
-    val output = process.inputStream.bufferedReader().readText().trim()
-    if (process.waitFor() == 0 && output.matches(Regex("[0-9a-f]{40}"))) output else null
+    // Wait before reading: a hung git (credential prompt, locked index) must
+    // fall back to "unknown" instead of stalling the build on stream EOF.
+    if (!process.waitFor(10, TimeUnit.SECONDS)) {
+        process.destroyForcibly()
+        null
+    } else {
+        val output = process.inputStream.bufferedReader().readText().trim()
+        if (process.exitValue() == 0 && output.matches(Regex("[0-9a-f]{40}"))) output else null
+    }
 }.getOrNull() ?: "unknown"
 
 android {

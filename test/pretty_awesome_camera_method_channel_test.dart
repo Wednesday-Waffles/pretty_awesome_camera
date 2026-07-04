@@ -45,6 +45,24 @@ void main() {
       expect(info['previewSwitch'], true);
     });
 
+    test('throws CameraException invalid_response on null payload', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            return null;
+          });
+
+      await expectLater(
+        platform.getBuildInfo(),
+        throwsA(
+          isA<CameraException>().having(
+            (error) => error.code,
+            'code',
+            'invalid_response',
+          ),
+        ),
+      );
+    });
+
     test('throws CameraException NOT_IMPLEMENTED on missing handler', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
