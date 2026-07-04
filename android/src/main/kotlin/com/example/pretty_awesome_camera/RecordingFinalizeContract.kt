@@ -17,6 +17,7 @@ internal data class FinalizeDecision(
 
 internal object RecordingFinalizeContract {
     const val STOP_TIMEOUT = "STOP_TIMEOUT"
+    const val STOP_FINALIZED = "STOP_FINALIZED"
 
     fun decide(error: Int, hasValidData: Boolean): FinalizeDecision {
         return when (error) {

@@ -761,7 +761,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         val pendingStop = cameraInstance.pendingStop ?: return
         mainHandler.removeCallbacks(pendingStop.timeoutRunnable)
         cameraInstance.pendingStop = null
-        failPendingPauseResume(cameraInstance, "STOP_FINALIZED")
+        failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
 
         val outputFile = pendingStop.outputFile
         val hasValidData = outputFileHasData(outputFile)

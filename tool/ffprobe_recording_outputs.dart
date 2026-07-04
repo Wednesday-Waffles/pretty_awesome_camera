@@ -4,7 +4,8 @@ import 'dart:math' as math;
 
 const _metadataSuffix = '.pretty_camera_harness.json';
 const _durationToleranceMs = 500;
-const _bitrateToleranceRatio = 1.0;
+const _minimumBitrateRatio = 0.25;
+const _maximumBitrateRatio = 2.0;
 const _minimumBitrateValidationDurationMs = 1000;
 const _resolutionToleranceRatio = 0.25;
 const _presetShortSide = {
@@ -212,12 +213,12 @@ void _assertExpectedBitrate(Map metadata, int? actualBitrate, int durationMs) {
     throw StateError('ffprobe did not report bitrate.');
   }
 
-  final minimum = (targetBitrate * (1 - _bitrateToleranceRatio)).round();
-  final maximum = (targetBitrate * (1 + _bitrateToleranceRatio)).round();
+  final minimum = (targetBitrate * _minimumBitrateRatio).round();
+  final maximum = (targetBitrate * _maximumBitrateRatio).round();
   if (actualBitrate < minimum || actualBitrate > maximum) {
     throw StateError(
-      'Bitrate $actualBitrate bps is outside +/-${(_bitrateToleranceRatio * 100).round()}% of target '
-      '$targetBitrate bps.',
+      'Bitrate $actualBitrate bps is outside $minimum-$maximum bps '
+      'for target $targetBitrate bps.',
     );
   }
 }
