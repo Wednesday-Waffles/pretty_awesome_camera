@@ -414,6 +414,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        failPendingPauseResume(cameraInstance, "DISPOSED")
+
         val activeRecording = cameraInstance.recording
         if (activeRecording != null) {
             val timeoutRunnable = Runnable {
@@ -475,7 +477,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
     }
 
-<<<<<<< HEAD
     private fun setZoom(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
         val zoom = (call.argument<Any>("zoom") as? Number)?.toDouble()
@@ -1327,11 +1328,19 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }, ContextCompat.getMainExecutor(activity))
     }
 
-    private fun restoreZoomRatio(camera: Camera, requestedZoomRatio: Float) {
+    private fun restoreZoomRatio(camera: Camera, requestedZoomRatio: Float, attempt: Int = 0) {
         try {
             val zoomState = camera.cameraInfo.zoomState.value
-            val minZoom = zoomState?.minZoomRatio ?: 1.0f
-            val maxZoom = zoomState?.maxZoomRatio ?: 1.0f
+            if (zoomState == null) {
+                if (attempt < 3) {
+                    mainHandler.postDelayed({
+                        restoreZoomRatio(camera, requestedZoomRatio, attempt + 1)
+                    }, 100L)
+                }
+                return
+            }
+            val minZoom = maxOf(1.0f, zoomState.minZoomRatio)
+            val maxZoom = maxOf(minZoom, minOf(zoomState.maxZoomRatio, 8.0f))
             val clampedZoom = requestedZoomRatio.coerceIn(minZoom, maxZoom)
             camera.cameraControl.setZoomRatio(clampedZoom)
         } catch (_: Exception) {
