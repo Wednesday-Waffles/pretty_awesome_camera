@@ -47,10 +47,6 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.view.TextureRegistry
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
 import java.io.File
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
@@ -896,59 +892,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             recordingDiagnostics(cameraInstance, "switch_camera")
         )
         return
-
-        if (cameraInstance.recording == null) {
-            result.error("NOT_RECORDING", "Camera not currently recording", null)
-            return
-        }
-
-        if (cameraInstance.isSwitching) {
-            result.error("SWITCH_IN_PROGRESS", "Camera switch already in progress", null)
-            return
-        }
-
-        if (cameraInstance.isPaused) {
-            result.error("PAUSED", "Cannot switch camera while paused", null)
-            return
-        }
-
-        val activity = this.activity ?: run {
-            result.error("NO_ACTIVITY", "Activity not available", null)
-            return
-        }
-
-        cameraInstance.isSwitching = true
-
-        val recording = cameraInstance.recording!!
-        cameraInstance.recording = null
-
-        cameraInstance.recordingURL?.let { url ->
-            cameraInstance.segmentFiles.add(File(url))
-        }
-        cameraInstance.recordingURL = null
-
-        val newLensDirection = if ((cameraInstance.cameraDescription?.get("lensDirection") as? String) == "front") "back" else "front"
-        val actualCameraId = cameraId!!
-
-        var hasCompleted = false
-        cameraInstance.switchingHandler = {
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.switchingHandler = null
-                performCameraSwitch(actualCameraId, cameraInstance, newLensDirection, activity, result)
-            }
-        }
-
-        recording.stop()
-
-        GlobalScope.launch(Dispatchers.Main) {
-            delay(3000)
-            if (!hasCompleted) {
-                hasCompleted = true
-                cameraInstance.switchingHandler = null
-                performCameraSwitch(actualCameraId, cameraInstance, newLensDirection, activity, result)
-            }
-        }
     }
 
     private fun performCameraSwitch(
