@@ -50,6 +50,7 @@ jobs:
           profile: pixel_6
           disable-animations: true
           script: |
+            bash <<'BASH'
             set -euxo pipefail
             cd example
             (
@@ -69,3 +70,4 @@ jobs:
               'cd cache && tar cf - *.mp4 *.pretty_camera_harness.json' \
               | tar xf - -C build/camera-harness-output
             dart run tool/ffprobe_recording_outputs.dart build/camera-harness-output
+            BASH
