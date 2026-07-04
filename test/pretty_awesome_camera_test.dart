@@ -9,6 +9,11 @@ class MockPrettyAwesomeCameraPlatform
   Future<String?> getPlatformVersion() => Future.value('42');
 
   @override
+  Future<Map<String, Object?>> getBuildInfo() {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<List<CameraDescription>> getAvailableCameras() {
     throw UnimplementedError();
   }

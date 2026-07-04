@@ -131,9 +131,23 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "canSwitchCamera" -> canSwitchCamera(call, result)
             "switchCamera" -> switchCamera(call, result)
             "canSwitchCurrentCamera" -> canSwitchCurrentCamera(result)
+            "getBuildInfo" -> getBuildInfo(result)
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
             else -> result.notImplemented()
         }
+    }
+
+    private fun getBuildInfo(result: Result) {
+        result.success(
+            mapOf(
+                "platform" to "android",
+                "pluginGitSha" to BuildConfig.PLUGIN_GIT_SHA,
+                "cameraxVersion" to BuildConfig.CAMERAX_VERSION,
+                "nativePauseResume" to true,
+                "previewSwitch" to true,
+                "persistentRecordingSwitch" to true
+            )
+        )
     }
 
     private fun getAvailableCameras(result: Result) {
@@ -1115,15 +1129,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        if (cameraInstance.recording == null) {
-            result.error(
-                "NOT_RECORDING",
-                "Camera not currently recording",
-                recordingDiagnostics(cameraInstance, "switch_camera")
-            )
-            return
-        }
-
         if (cameraInstance.isSwitching) {
             result.error(
                 "SWITCH_IN_PROGRESS",
@@ -1155,6 +1160,22 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             result.error(
                 "PAUSED_FLIP_UNSUPPORTED",
                 "Android does not support switching cameras while recording is paused",
+                recordingDiagnostics(cameraInstance, "switch_camera")
+            )
+            return
+        }
+
+        // CameraX creates a NEW video encoder for each camera rebind during a
+        // persistent recording (Recorder.SetupVideoTask), and the replacement
+        // encoder starts with an empty pause ledger (EncoderImpl
+        // mTotalPausedDurationUs = 0) while the audio encoder keeps its pause
+        // adjustment. Switching after any completed pause therefore desyncs
+        // audio and video by the total prior paused duration. Present through
+        // CameraX 1.7.0-alpha02.
+        if (cameraInstance.recording != null && cameraInstance.pauseCount > 0) {
+            result.error(
+                "PAUSE_HISTORY_FLIP_UNSUPPORTED",
+                "Android does not support switching cameras after a recording has been paused",
                 recordingDiagnostics(cameraInstance, "switch_camera")
             )
             return
@@ -1204,7 +1225,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             ?.zoomRatio
             ?: 1.0f
         cameraInstance.isSwitching = true
-        performPersistentCameraSwitch(
+        performCameraSwitch(
             cameraInstance = cameraInstance,
             newLensDirection = newLensDirection,
             activity = activity,
@@ -1215,6 +1236,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         )
     }
 
+    // Reports the MID-RECORDING switch capability only, matching iOS
+    // (canSwitchCamera returns isRecording there). Preview switches are
+    // always supported and intentionally NOT reflected here — gate preview
+    // flip UI on camera availability, not on this method.
     private fun canSwitchCameraInstance(cameraInstance: CameraInstance): Boolean {
         val activity = this.activity ?: return false
         if (cameraInstance.recording == null) {
@@ -1226,7 +1251,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             cameraInstance.pendingPauseResult != null ||
             cameraInstance.pendingResumeResult != null ||
             cameraInstance.isSwitching ||
-            cameraInstance.isPaused
+            cameraInstance.isPaused ||
+            cameraInstance.pauseCount > 0
         ) {
             return false
         }
@@ -1262,7 +1288,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
     }
 
-    private fun performPersistentCameraSwitch(
+    private fun performCameraSwitch(
         cameraInstance: CameraInstance,
         newLensDirection: String,
         activity: Activity,

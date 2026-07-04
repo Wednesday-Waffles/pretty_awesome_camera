@@ -74,6 +74,23 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
+  Future<Map<String, Object?>> getBuildInfo() async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'getBuildInfo',
+      fallbackMessage: 'Failed to get build info',
+    );
+    if (result == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null build info',
+      );
+    }
+    return Map<dynamic, dynamic>.from(
+      result as Map,
+    ).map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  @override
   Future<List<CameraDescription>> getAvailableCameras() async {
     final result = await _invokeCameraMethod<List<dynamic>>(
       'getAvailableCameras',

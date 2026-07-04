@@ -5,6 +5,7 @@ import 'dart:math' as math;
 const _metadataSuffix = '.pretty_camera_harness.json';
 const _durationToleranceMs = 500;
 const _emulatorDurationToleranceMs = 1500;
+const _streamAlignmentToleranceMs = 300;
 const _minimumBitrateRatio = 0.25;
 const _maximumBitrateRatio = 2.0;
 const _minimumBitrateValidationDurationMs = 1000;
@@ -112,7 +113,7 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
     '-show_format',
     '-show_streams',
     '-show_entries',
-    'format=duration,bit_rate:stream=index,codec_type,width,height,bit_rate,avg_frame_rate',
+    'format=duration,bit_rate:stream=index,codec_type,width,height,bit_rate,avg_frame_rate,duration',
     video.path,
   ]);
   final streams = (probe['streams'] as List? ?? const []).cast<Map>();
@@ -158,6 +159,33 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
       throw StateError(
         'Duration delta ${durationDelta}ms exceeds ${effectiveToleranceMs}ms '
         '(actual=${durationMs}ms expected=${expectedMs}ms).',
+      );
+    }
+  }
+
+  // Audio and video tracks must cover the same timeline. A per-track delta is
+  // the direct signature of the CameraX pause+switch desync (the replacement
+  // video encoder loses the pause timestamp adjustment while the audio
+  // encoder keeps it), which a container-duration check alone cannot see.
+  final audioStream = streams.firstWhere(
+    (stream) => stream['codec_type'] == 'audio',
+  );
+  final videoStreamSeconds = double.tryParse('${videoStream['duration']}');
+  final audioStreamSeconds = double.tryParse('${audioStream['duration']}');
+  if (videoStreamSeconds == null || audioStreamSeconds == null) {
+    stderr.writeln(
+      'WARN $scenario container does not report per-stream durations; '
+      'skipping A/V track alignment check.',
+    );
+  } else {
+    final streamDeltaMs = ((videoStreamSeconds - audioStreamSeconds) * 1000)
+        .round()
+        .abs();
+    if (streamDeltaMs > _streamAlignmentToleranceMs) {
+      throw StateError(
+        'Audio/video track durations diverge by ${streamDeltaMs}ms '
+        '(video=${videoStreamSeconds}s audio=${audioStreamSeconds}s) — '
+        'A/V desync.',
       );
     }
   }

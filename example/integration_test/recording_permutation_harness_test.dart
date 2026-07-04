@@ -22,7 +22,13 @@ void main() {
     );
 
     final scenarios = _scenariosFromEnvironment();
-    final harness = RecordingPermutationHarness();
+    const pauseMs = int.fromEnvironment(
+      'CAMERA_HARNESS_PAUSE_MS',
+      defaultValue: 450,
+    );
+    final harness = RecordingPermutationHarness(
+      pauseDuration: Duration(milliseconds: pauseMs),
+    );
     final results = await harness.runAll(scenarios: scenarios);
     final produced = results.where((result) => !result.isSkipped).toList();
 
