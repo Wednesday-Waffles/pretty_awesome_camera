@@ -26,10 +26,27 @@ plugins {
     id("kotlin-android")
 }
 
+val cameraXVersion = "1.6.1"
+
+// Resolved at build time so the app can prove at runtime which plugin build it
+// is actually running (see the getBuildInfo method channel call).
+val pluginGitSha: String = runCatching {
+    val process = ProcessBuilder("git", "rev-parse", "HEAD")
+        .directory(projectDir)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    if (process.waitFor() == 0 && output.matches(Regex("[0-9a-f]{40}"))) output else null
+}.getOrNull() ?: "unknown"
+
 android {
     namespace = "com.example.pretty_awesome_camera"
 
     compileSdk = 36
+
+    buildFeatures {
+        buildConfig = true
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -51,6 +68,8 @@ android {
 
     defaultConfig {
         minSdk = 23
+        buildConfigField("String", "CAMERAX_VERSION", "\"$cameraXVersion\"")
+        buildConfigField("String", "PLUGIN_GIT_SHA", "\"$pluginGitSha\"")
     }
 
     testOptions {
@@ -71,7 +90,6 @@ android {
 }
 
 dependencies {
-    val cameraXVersion = "1.6.1"
     implementation("androidx.camera:camera-core:$cameraXVersion")
     implementation("androidx.camera:camera-camera2:$cameraXVersion")
     implementation("androidx.camera:camera-lifecycle:$cameraXVersion")

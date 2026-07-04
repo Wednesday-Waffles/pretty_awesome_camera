@@ -10,6 +10,7 @@ const _metadataSuffix = '.pretty_camera_harness.json';
 
 enum RecordingPermutationScenario {
   recordStop,
+  previewSwitchRecordStop,
   pauseResumeTwice,
   flipTwice,
   pauseResumeFlip,
@@ -23,6 +24,8 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
   String get id {
     return switch (this) {
       RecordingPermutationScenario.recordStop => 'record_stop',
+      RecordingPermutationScenario.previewSwitchRecordStop =>
+        'preview_switch_record_stop',
       RecordingPermutationScenario.pauseResumeTwice => 'pause_resume_twice',
       RecordingPermutationScenario.flipTwice => 'flip_twice',
       RecordingPermutationScenario.pauseResumeFlip => 'pause_resume_flip',
@@ -37,6 +40,8 @@ extension RecordingPermutationScenarioLabel on RecordingPermutationScenario {
   String get label {
     return switch (this) {
       RecordingPermutationScenario.recordStop => 'Record -> stop',
+      RecordingPermutationScenario.previewSwitchRecordStop =>
+        'Preview flip x2 -> record -> stop',
       RecordingPermutationScenario.pauseResumeTwice =>
         'Record -> pause x2 -> resume -> stop',
       RecordingPermutationScenario.flipTwice => 'Record -> flip x2 -> stop',
@@ -189,12 +194,21 @@ class RecordingPermutationHarness {
       await _platform.initializeCamera(cameraId);
       operations.add('initializeCamera');
 
+      if (scenario == RecordingPermutationScenario.previewSwitchRecordStop) {
+        await _platform.switchCamera(cameraId);
+        operations.add('switchCamera:preview');
+        await _platform.switchCamera(cameraId);
+        operations.add('switchCamera:preview');
+      }
+
       await _platform.startRecording(cameraId);
       operations.add('startRecording');
       startedAt = DateTime.now();
 
       switch (scenario) {
         case RecordingPermutationScenario.recordStop:
+          await Future<void>.delayed(shortClipDuration);
+        case RecordingPermutationScenario.previewSwitchRecordStop:
           await Future<void>.delayed(shortClipDuration);
         case RecordingPermutationScenario.pauseResumeTwice:
           await Future<void>.delayed(shortClipDuration);
@@ -435,6 +449,7 @@ class RecordingPermutationHarness {
 
   bool _requiresFrontAndBack(RecordingPermutationScenario scenario) {
     return switch (scenario) {
+      RecordingPermutationScenario.previewSwitchRecordStop ||
       RecordingPermutationScenario.flipTwice ||
       RecordingPermutationScenario.pauseResumeFlip ||
       RecordingPermutationScenario.pausedFlipUnsupported ||

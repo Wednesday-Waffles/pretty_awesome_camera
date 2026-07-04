@@ -131,9 +131,23 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "canSwitchCamera" -> canSwitchCamera(call, result)
             "switchCamera" -> switchCamera(call, result)
             "canSwitchCurrentCamera" -> canSwitchCurrentCamera(result)
+            "getBuildInfo" -> getBuildInfo(result)
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
             else -> result.notImplemented()
         }
+    }
+
+    private fun getBuildInfo(result: Result) {
+        result.success(
+            mapOf(
+                "platform" to "android",
+                "pluginGitSha" to BuildConfig.PLUGIN_GIT_SHA,
+                "cameraxVersion" to BuildConfig.CAMERAX_VERSION,
+                "nativePauseResume" to true,
+                "previewSwitch" to true,
+                "persistentRecordingSwitch" to true
+            )
+        )
     }
 
     private fun getAvailableCameras(result: Result) {
@@ -1115,15 +1129,6 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        if (cameraInstance.recording == null) {
-            result.error(
-                "NOT_RECORDING",
-                "Camera not currently recording",
-                recordingDiagnostics(cameraInstance, "switch_camera")
-            )
-            return
-        }
-
         if (cameraInstance.isSwitching) {
             result.error(
                 "SWITCH_IN_PROGRESS",
@@ -1204,7 +1209,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             ?.zoomRatio
             ?: 1.0f
         cameraInstance.isSwitching = true
-        performPersistentCameraSwitch(
+        performCameraSwitch(
             cameraInstance = cameraInstance,
             newLensDirection = newLensDirection,
             activity = activity,
@@ -1262,7 +1267,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
     }
 
-    private fun performPersistentCameraSwitch(
+    private fun performCameraSwitch(
         cameraInstance: CameraInstance,
         newLensDirection: String,
         activity: Activity,

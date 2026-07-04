@@ -25,6 +25,47 @@ void main() {
     expect(await platform.getPlatformVersion(), '42');
   });
 
+  group('getBuildInfo', () {
+    test('returns typed map from platform payload', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            expect(methodCall.method, 'getBuildInfo');
+            return <dynamic, dynamic>{
+              'platform': 'android',
+              'pluginGitSha': 'abc123',
+              'cameraxVersion': '1.6.1',
+              'previewSwitch': true,
+            };
+          });
+
+      final info = await platform.getBuildInfo();
+      expect(info['platform'], 'android');
+      expect(info['pluginGitSha'], 'abc123');
+      expect(info['cameraxVersion'], '1.6.1');
+      expect(info['previewSwitch'], true);
+    });
+
+    test('throws CameraException NOT_IMPLEMENTED on missing handler', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            throw MissingPluginException(
+              'No implementation found for ${methodCall.method}',
+            );
+          });
+
+      await expectLater(
+        platform.getBuildInfo(),
+        throwsA(
+          isA<CameraException>().having(
+            (error) => error.code,
+            'code',
+            'NOT_IMPLEMENTED',
+          ),
+        ),
+      );
+    });
+  });
+
   group('MissingPluginException mapping', () {
     test(
       'method wrappers throw CameraException with NOT_IMPLEMENTED',

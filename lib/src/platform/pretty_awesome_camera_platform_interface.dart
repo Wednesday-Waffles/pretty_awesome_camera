@@ -34,6 +34,17 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
 
+  /// Returns build provenance for the underlying native implementation, such
+  /// as the plugin git SHA, bundled camera framework version, and capability
+  /// flags.
+  ///
+  /// Only implemented on Android. Builds without this method surface a
+  /// [CameraException] mapped from the missing plugin handler, which callers
+  /// can treat as "provenance unavailable".
+  Future<Map<String, Object?>> getBuildInfo() {
+    throw UnimplementedError('getBuildInfo() has not been implemented.');
+  }
+
   /// Retrieves a list of available cameras on the device.
   Future<List<CameraDescription>> getAvailableCameras() {
     throw UnimplementedError('getAvailableCameras() has not been implemented.');
