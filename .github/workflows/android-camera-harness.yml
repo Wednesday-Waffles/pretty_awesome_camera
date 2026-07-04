@@ -51,24 +51,8 @@ jobs:
           emulator-boot-timeout: 1200
           disable-animations: true
           script: |
-            bash <<'BASH'
-            set -euxo pipefail
-            cd example
-            (
-              for _ in $(seq 1 60); do
-                adb shell pm grant com.example.pretty_awesome_camera_example android.permission.CAMERA &&
-                adb shell pm grant com.example.pretty_awesome_camera_example android.permission.RECORD_AUDIO &&
-                break || true
-                sleep 1
-              done
-            ) &
-            flutter test integration_test/recording_permutation_harness_test.dart \
-              -d emulator-5554 \
-              --dart-define=CAMERA_HARNESS_SCENARIOS=record_stop,rapid_start_stop
-            cd ..
+            ( for _ in $(seq 1 60); do adb shell pm grant com.example.pretty_awesome_camera_example android.permission.CAMERA && adb shell pm grant com.example.pretty_awesome_camera_example android.permission.RECORD_AUDIO && break || true; sleep 1; done ) &
+            cd example && flutter test integration_test/recording_permutation_harness_test.dart -d emulator-5554 --dart-define=CAMERA_HARNESS_SCENARIOS=record_stop,rapid_start_stop
             mkdir -p build/camera-harness-output
-            adb exec-out run-as com.example.pretty_awesome_camera_example sh -c \
-              'cd cache && tar cf - *.mp4 *.pretty_camera_harness.json' \
-              | tar xf - -C build/camera-harness-output
+            adb exec-out run-as com.example.pretty_awesome_camera_example sh -c 'cd cache && tar cf - *.mp4 *.pretty_camera_harness.json' | tar xf - -C build/camera-harness-output
             dart run tool/ffprobe_recording_outputs.dart build/camera-harness-output
-            BASH
