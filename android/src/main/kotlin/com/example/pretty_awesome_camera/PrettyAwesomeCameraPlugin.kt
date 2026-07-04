@@ -42,6 +42,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.io.File
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.nio.ByteBuffer
@@ -319,10 +320,15 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
         try {
             val zoomState = camera.cameraInfo.zoomState.value
-            val minZoom = maxOf(1.0f, zoomState?.minZoomRatio ?: 1.0f)
+            if (zoomState == null) {
+                result.error("ZOOM_NOT_READY", "Zoom state not yet available", null)
+                return
+            }
+
+            val minZoom = maxOf(1.0f, zoomState.minZoomRatio)
             val maxZoom = maxOf(
                 minZoom,
-                minOf(zoomState?.maxZoomRatio ?: minZoom, 8.0f)
+                minOf(zoomState.maxZoomRatio, 8.0f)
             )
             val appliedZoom = zoom.toFloat().coerceIn(minZoom, maxZoom)
             val zoomFuture = camera.cameraControl.setZoomRatio(appliedZoom)
@@ -331,6 +337,9 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                 try {
                     zoomFuture.get()
                     result.success(appliedZoom.toDouble())
+                } catch (e: ExecutionException) {
+                    val cause = e.cause ?: e
+                    result.error("ZOOM_ERROR", cause.message, null)
                 } catch (e: Exception) {
                     result.error("ZOOM_ERROR", e.message, null)
                 }
