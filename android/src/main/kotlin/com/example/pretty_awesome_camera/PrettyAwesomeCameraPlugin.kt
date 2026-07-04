@@ -475,6 +475,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
     }
 
+<<<<<<< HEAD
     private fun setZoom(call: MethodCall, result: Result) {
         val cameraId = call.argument<Int>("cameraId")
         val zoom = (call.argument<Any>("zoom") as? Number)?.toDouble()
