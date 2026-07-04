@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 const _metadataSuffix = '.pretty_camera_harness.json';
 const _durationToleranceMs = 500;
+const _emulatorDurationToleranceMs = 1500;
 const _minimumBitrateRatio = 0.25;
 const _maximumBitrateRatio = 2.0;
 const _minimumBitrateValidationDurationMs = 1000;
@@ -145,10 +146,18 @@ Future<_ValidationResult> _validateRecording(File metadataFile) async {
   final durationDelta = (durationMs - expectedMs).abs();
   final effectiveToleranceMs = math.min(_durationToleranceMs, expectedMs ~/ 2);
   if (durationDelta > effectiveToleranceMs) {
-    throw StateError(
-      'Duration delta ${durationDelta}ms exceeds ${effectiveToleranceMs}ms '
-      '(actual=${durationMs}ms expected=${expectedMs}ms).',
-    );
+    if (metadata['isEmulator'] == true &&
+        durationDelta <= _emulatorDurationToleranceMs) {
+      stderr.writeln(
+        'WARN $scenario on Android emulator encoded ${durationMs}ms for '
+        '${expectedMs}ms wall clock; allowing hosted-camera startup lag.',
+      );
+    } else {
+      throw StateError(
+        'Duration delta ${durationDelta}ms exceeds ${effectiveToleranceMs}ms '
+        '(actual=${durationMs}ms expected=${expectedMs}ms).',
+      );
+    }
   }
 
   final bitrate =
