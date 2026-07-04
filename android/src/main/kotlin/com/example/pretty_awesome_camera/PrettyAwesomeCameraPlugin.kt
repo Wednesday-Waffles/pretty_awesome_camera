@@ -11,6 +11,7 @@ import android.media.AudioManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Range
 import android.util.Size
 import android.view.Surface
 import android.view.OrientationEventListener
@@ -52,6 +53,7 @@ import java.util.concurrent.Executors
 class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private companion object {
         const val STOP_FINALIZE_TIMEOUT_MS = 10_000L
+        const val TARGET_FRAME_RATE_FPS = 30
     }
 
     private lateinit var channel: MethodChannel
@@ -338,6 +340,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     private fun buildVideoCapture(recorder: Recorder): VideoCapture<Recorder> {
         return VideoCapture.Builder(recorder)
             .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
+            .setTargetFrameRate(Range(TARGET_FRAME_RATE_FPS, TARGET_FRAME_RATE_FPS))
             .build()
     }
 
