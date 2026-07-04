@@ -6,6 +6,8 @@ import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   final StreamController<RecordingState> recordingStateController =
       StreamController<RecordingState>.broadcast();
+  final StreamController<AudioDeviceChangedEvent> audioDeviceChangedController =
+      StreamController<AudioDeviceChangedEvent>.broadcast();
   List<CameraDescription> availableCameras = [];
   int getAvailableCamerasCallCount = 0;
 
@@ -70,7 +72,7 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
-    return const Stream<AudioDeviceChangedEvent>.empty();
+    return audioDeviceChangedController.stream;
   }
 
   @override
@@ -121,6 +123,7 @@ void main() {
 
   tearDown(() async {
     await platform.recordingStateController.close();
+    await platform.audioDeviceChangedController.close();
   });
 
   test('starts uninitialized with config', () {
@@ -375,6 +378,33 @@ void main() {
 
     platform.recordingStateController.add(RecordingState.idle);
     await Future<void>.delayed(Duration.zero);
+    expect(controller.value, isA<CameraReadyState>());
+  });
+
+  test('audio device stream errors are swallowed after prewarm', () async {
+    final controller = CameraController(
+      description: description,
+      platform: platform,
+    );
+    final uncaughtErrors = <Object>[];
+
+    await runZonedGuarded<Future<void>>(
+      () async {
+        await controller.prewarmUp();
+        platform.audioDeviceChangedController.addError(
+          const CameraException(
+            code: 'stream_error',
+            message: 'Missing audio EventChannel',
+          ),
+        );
+        await Future<void>.delayed(Duration.zero);
+      },
+      (Object error, StackTrace stackTrace) {
+        uncaughtErrors.add(error);
+      },
+    );
+
+    expect(uncaughtErrors, isEmpty);
     expect(controller.value, isA<CameraReadyState>());
   });
 

@@ -2,15 +2,18 @@ package com.example.pretty_awesome_camera
 
 import android.app.Activity
 import android.content.Context
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.media.MediaMuxer
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.view.Surface
 import android.view.OrientationEventListener
 import androidx.camera.core.Camera
@@ -39,6 +42,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
 import java.io.File
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.nio.ByteBuffer
@@ -52,6 +56,8 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     private val executor = Executors.newSingleThreadExecutor()
     private val eventChannels = mutableMapOf<Int, EventChannel>()
     private val streamHandlers = mutableMapOf<Int, RecordingStateStreamHandler>()
+    private val audioEventChannels = mutableMapOf<Int, EventChannel>()
+    private val audioStreamHandlers = mutableMapOf<Int, AudioDeviceStreamHandler>()
     private var orientationListener: OrientationListener? = null
 
     data class CameraInstance(
@@ -87,6 +93,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "pauseRecording" -> pauseRecording(call, result)
             "resumeRecording" -> resumeRecording(call, result)
             "stopRecording" -> stopRecording(call, result)
+            "setZoom" -> setZoom(call, result)
             "isMultiCamSupported" -> isMultiCamSupported(result)
             "canSwitchCamera" -> canSwitchCamera(call, result)
             "switchCamera" -> switchCamera(call, result)
@@ -213,6 +220,15 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
                     stateChannel.setStreamHandler(streamHandler)
                     eventChannels[actualCameraId] = stateChannel
                     streamHandlers[actualCameraId] = streamHandler
+
+                    val audioChannel = EventChannel(
+                        pluginBinding.binaryMessenger,
+                        "pretty_awesome_camera/audio_device_${actualCameraId}"
+                    )
+                    val audioStreamHandler = AudioDeviceStreamHandler(activity.applicationContext)
+                    audioChannel.setStreamHandler(audioStreamHandler)
+                    audioEventChannels[actualCameraId] = audioChannel
+                    audioStreamHandlers[actualCameraId] = audioStreamHandler
                 }
 
                 val textureId = textureEntry.id()
@@ -254,6 +270,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         eventChannels.remove(cameraId)
         streamHandlers.remove(cameraId)
 
+        audioEventChannels[cameraId]?.setStreamHandler(null)
+        audioEventChannels.remove(cameraId)
+        audioStreamHandlers.remove(cameraId)?.dispose()
+
         val activity = this.activity
         if (activity != null && cameraInstance.camera != null) {
             val cameraProviderFuture = ProcessCameraProvider.getInstance(activity)
@@ -271,6 +291,61 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             cameraInstance.textureEntry?.release()
             cameras.remove(cameraId)
             result.success(null)
+        }
+    }
+
+    private fun setZoom(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val zoom = (call.argument<Any>("zoom") as? Number)?.toDouble()
+
+        if (zoom == null) {
+            result.error("INVALID_ARGUMENT", "Zoom factor is required", null)
+            return
+        }
+
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+
+        val camera = cameraInstance.camera ?: run {
+            result.error("NOT_INITIALIZED", "Camera not initialized", null)
+            return
+        }
+
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        try {
+            val zoomState = camera.cameraInfo.zoomState.value
+            if (zoomState == null) {
+                result.error("ZOOM_NOT_READY", "Zoom state not yet available", null)
+                return
+            }
+
+            val minZoom = maxOf(1.0f, zoomState.minZoomRatio)
+            val maxZoom = maxOf(
+                minZoom,
+                minOf(zoomState.maxZoomRatio, 8.0f)
+            )
+            val appliedZoom = zoom.toFloat().coerceIn(minZoom, maxZoom)
+            val zoomFuture = camera.cameraControl.setZoomRatio(appliedZoom)
+
+            zoomFuture.addListener({
+                try {
+                    zoomFuture.get()
+                    result.success(appliedZoom.toDouble())
+                } catch (e: ExecutionException) {
+                    val cause = e.cause ?: e
+                    result.error("ZOOM_ERROR", cause.message, null)
+                } catch (e: Exception) {
+                    result.error("ZOOM_ERROR", e.message, null)
+                }
+            }, ContextCompat.getMainExecutor(activity))
+        } catch (e: Exception) {
+            result.error("ZOOM_ERROR", e.message, null)
         }
     }
 
@@ -883,6 +958,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+        audioEventChannels.values.forEach { it.setStreamHandler(null) }
+        audioEventChannels.clear()
+        audioStreamHandlers.values.forEach { it.dispose() }
+        audioStreamHandlers.clear()
         channel.setMethodCallHandler(null)
         flutterPluginBinding = null
     }
@@ -909,6 +988,112 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         orientationListener?.stop()
         orientationListener = null
         activity = null
+    }
+}
+
+class AudioDeviceStreamHandler(context: Context) : EventChannel.StreamHandler {
+    private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private var eventSink: EventChannel.EventSink? = null
+    private var callback: AudioDeviceCallback? = null
+
+    override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+        eventSink = events
+        events?.success(currentAudioDeviceEvent("initial"))
+
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return
+        }
+
+        val audioCallback = object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
+                emitAudioDeviceChanged()
+            }
+
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
+                emitAudioDeviceChanged()
+            }
+        }
+        callback = audioCallback
+        audioManager.registerAudioDeviceCallback(
+            audioCallback,
+            Handler(Looper.getMainLooper())
+        )
+    }
+
+    override fun onCancel(arguments: Any?) {
+        dispose()
+    }
+
+    fun dispose() {
+        val registeredCallback = callback
+        if (registeredCallback != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            audioManager.unregisterAudioDeviceCallback(registeredCallback)
+        }
+        callback = null
+        eventSink = null
+    }
+
+    private fun emitAudioDeviceChanged() {
+        eventSink?.success(currentAudioDeviceEvent("audioRouteChanged"))
+    }
+
+    private fun currentAudioDeviceEvent(event: String): Map<String, Any> {
+        val device = preferredInputDevice()
+        return mapOf(
+            "event" to event,
+            "deviceName" to deviceName(device),
+            "portType" to audioDeviceTypeName(device?.type),
+            "isBluetooth" to isBluetoothDevice(device)
+        )
+    }
+
+    private fun preferredInputDevice(): AudioDeviceInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return null
+        }
+
+        val inputDevices = audioManager
+            .getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .filter { it.isSource }
+
+        return inputDevices.firstOrNull { isBluetoothDevice(it) }
+            ?: inputDevices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
+            ?: inputDevices.firstOrNull()
+    }
+
+    private fun deviceName(device: AudioDeviceInfo?): String {
+        val productName = device?.productName?.toString()
+        if (!productName.isNullOrBlank()) {
+            return productName
+        }
+        return if (device == null) {
+            "Android Microphone"
+        } else {
+            audioDeviceTypeName(device.type)
+        }
+    }
+
+    private fun audioDeviceTypeName(type: Int?): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "BuiltInMic"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "BluetoothSCO"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "WiredHeadset"
+            AudioDeviceInfo.TYPE_USB_DEVICE -> "UsbDevice"
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "UsbHeadset"
+            AudioDeviceInfo.TYPE_BLE_HEADSET -> "BluetoothLEHeadset"
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> "BluetoothLEBroadcast"
+            null -> "BuiltInMic"
+            else -> "AndroidAudioDevice$type"
+        }
+    }
+
+    private fun isBluetoothDevice(device: AudioDeviceInfo?): Boolean {
+        return when (device?.type) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_BLE_HEADSET,
+            AudioDeviceInfo.TYPE_BLE_BROADCAST -> true
+            else -> false
+        }
     }
 }
 

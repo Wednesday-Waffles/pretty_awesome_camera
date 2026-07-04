@@ -25,6 +25,68 @@ void main() {
     expect(await platform.getPlatformVersion(), '42');
   });
 
+  group('MissingPluginException mapping', () {
+    test(
+      'method wrappers throw CameraException with NOT_IMPLEMENTED',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+              throw MissingPluginException(
+                'No implementation found for ${methodCall.method}',
+              );
+            });
+
+        final camera = CameraDescription(
+          name: 'Back Camera',
+          lensDirection: LensDirection.back,
+          sensorOrientation: 90,
+        );
+        final calls = <String, Future<Object?> Function()>{
+          'getPlatformVersion': platform.getPlatformVersion,
+          'getAvailableCameras': platform.getAvailableCameras,
+          'createCamera': () => platform.createCamera(
+            camera,
+            const CameraConfig(resolutionPreset: ResolutionPreset.high),
+          ),
+          'initializeCamera': () => platform.initializeCamera(0),
+          'startRecording': () async {
+            await platform.startRecording(0);
+            return null;
+          },
+          'stopRecording': () => platform.stopRecording(0),
+          'pauseRecording': () async {
+            await platform.pauseRecording(0);
+            return null;
+          },
+          'resumeRecording': () async {
+            await platform.resumeRecording(0);
+            return null;
+          },
+          'setZoom': () => platform.setZoom(0, 2),
+          'disposeCamera': () async {
+            await platform.disposeCamera(0);
+            return null;
+          },
+          'canSwitchCamera': () => platform.canSwitchCamera(0),
+          'switchCamera': () => platform.switchCamera(0),
+          'canSwitchCurrentCamera': () => platform.canSwitchCurrentCamera,
+          'isMultiCamSupported': platform.isMultiCamSupported,
+        };
+
+        for (final entry in calls.entries) {
+          await expectLater(
+            entry.value(),
+            throwsA(
+              isA<CameraException>()
+                  .having((e) => e.code, 'code', 'NOT_IMPLEMENTED')
+                  .having((e) => e.message, 'message', contains(entry.key)),
+            ),
+          );
+        }
+      },
+    );
+  });
+
   group('getAvailableCameras', () {
     test('returns list of cameras', () async {
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
