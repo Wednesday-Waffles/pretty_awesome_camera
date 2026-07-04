@@ -26,9 +26,7 @@ internal object RecordingFinalizeContract {
                     FinalizeDecision(FinalizeAction.RETURN_PATH)
                 } else {
                     FinalizeDecision(
-                        action = FinalizeAction.THROW_ERROR,
-                        errorCode = "STOP_OUTPUT_MISSING",
-                        message = "CameraX finalized without an output file",
+                        action = FinalizeAction.RETURN_NULL,
                         deletePartial = true
                     )
                 }

@@ -17,14 +17,13 @@ internal class RecordingFinalizeContractTest {
     }
 
     @Test
-    fun decide_errorNoneWithoutValidData_throwsMissingOutput() {
+    fun decide_errorNoneWithoutValidData_returnsNullAndDeletesPartial() {
         val decision = RecordingFinalizeContract.decide(
             VideoRecordEvent.Finalize.ERROR_NONE,
             hasValidData = false
         )
 
-        assertEquals(FinalizeAction.THROW_ERROR, decision.action)
-        assertEquals("STOP_OUTPUT_MISSING", decision.errorCode)
+        assertEquals(FinalizeAction.RETURN_NULL, decision.action)
         assertTrue(decision.deletePartial)
     }
 
