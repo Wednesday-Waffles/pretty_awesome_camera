@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:pretty_awesome_camera/pretty_awesome_camera.dart';
 
 const _harnessResolutionPreset = ResolutionPreset.medium;
@@ -58,6 +59,8 @@ class RecordingPermutationResult {
     required this.cameraLens,
     this.requestedResolutionPreset = _harnessResolutionPreset,
     this.targetVideoBitrate = _harnessVideoBitrate,
+    this.deviceModel,
+    this.isEmulator,
     this.videoPath,
     this.metadataPath,
     this.skippedReason,
@@ -74,6 +77,8 @@ class RecordingPermutationResult {
   final LensDirection cameraLens;
   final ResolutionPreset requestedResolutionPreset;
   final int? targetVideoBitrate;
+  final String? deviceModel;
+  final bool? isEmulator;
   final String? videoPath;
   final String? metadataPath;
   final String? skippedReason;
@@ -96,6 +101,8 @@ class RecordingPermutationResult {
       'cameraLens': cameraLens.name,
       'requestedResolutionPreset': requestedResolutionPreset.name,
       'targetVideoBitrate': targetVideoBitrate,
+      'deviceModel': deviceModel,
+      'isEmulator': isEmulator,
       'videoPath': videoPath,
       'metadataPath': metadataPath,
       'skippedReason': skippedReason,
@@ -200,6 +207,7 @@ class RecordingPermutationHarness {
       videoPath = await _platform.stopRecording(cameraId);
       operations.add('stopRecording');
 
+      final deviceMetadata = await _deviceMetadata();
       final result = RecordingPermutationResult(
         scenario: scenario,
         startedAt: startedAt,
@@ -209,6 +217,8 @@ class RecordingPermutationHarness {
         expectedDuration: stoppedAt.difference(startedAt) - pausedDuration,
         operations: operations,
         cameraLens: camera.lensDirection,
+        deviceModel: deviceMetadata.deviceModel,
+        isEmulator: deviceMetadata.isEmulator,
         videoPath: videoPath,
       );
       return _writeMetadata(result);
@@ -264,6 +274,8 @@ class RecordingPermutationHarness {
         expectedDuration: result.expectedDuration,
         operations: result.operations,
         cameraLens: result.cameraLens,
+        deviceModel: result.deviceModel,
+        isEmulator: result.isEmulator,
         error: 'stopRecording returned no output path.',
       );
     }
@@ -280,6 +292,8 @@ class RecordingPermutationHarness {
       cameraLens: result.cameraLens,
       requestedResolutionPreset: result.requestedResolutionPreset,
       targetVideoBitrate: result.targetVideoBitrate,
+      deviceModel: result.deviceModel,
+      isEmulator: result.isEmulator,
       videoPath: videoPath,
       metadataPath: metadataPath,
     );
@@ -335,4 +349,26 @@ class RecordingPermutationHarness {
       await _platform.disposeCamera(cameraId);
     } catch (_) {}
   }
+
+  Future<_HarnessDeviceMetadata> _deviceMetadata() async {
+    if (!Platform.isAndroid) {
+      return const _HarnessDeviceMetadata();
+    }
+    try {
+      final info = await DeviceInfoPlugin().androidInfo;
+      return _HarnessDeviceMetadata(
+        deviceModel: info.model,
+        isEmulator: !info.isPhysicalDevice,
+      );
+    } catch (_) {
+      return const _HarnessDeviceMetadata();
+    }
+  }
+}
+
+class _HarnessDeviceMetadata {
+  const _HarnessDeviceMetadata({this.deviceModel, this.isEmulator});
+
+  final String? deviceModel;
+  final bool? isEmulator;
 }

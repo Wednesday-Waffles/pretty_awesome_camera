@@ -166,9 +166,23 @@ void _assertExpectedResolution(Map metadata, int videoWidth, int videoHeight) {
 
   final actualShortSide = math.min(videoWidth, videoHeight);
   final minimum = (expectedShortSide * (1 - _resolutionToleranceRatio)).round();
+  final maximum = (expectedShortSide * (1 + _resolutionToleranceRatio)).round();
   if (actualShortSide < minimum) {
     throw StateError(
       'Expected $preset short side at least near ${expectedShortSide}px, got '
+      '${videoWidth}x$videoHeight.',
+    );
+  }
+  if (actualShortSide > maximum) {
+    if (metadata['isEmulator'] == true) {
+      stderr.writeln(
+        'WARN $preset on Android emulator encoded ${videoWidth}x$videoHeight; '
+        'allowing CameraX higher-quality fallback for hosted smoke only.',
+      );
+      return;
+    }
+    throw StateError(
+      'Expected $preset short side near ${expectedShortSide}px, got '
       '${videoWidth}x$videoHeight.',
     );
   }
