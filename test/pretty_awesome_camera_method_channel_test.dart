@@ -156,9 +156,11 @@ void main() {
 
   group('createCamera', () {
     test('returns camera ID', () async {
+      MethodCall? capturedCall;
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
           .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
             if (methodCall.method == 'createCamera') {
+              capturedCall = methodCall;
               return 0;
             }
             return null;
@@ -174,6 +176,43 @@ void main() {
         const CameraConfig(resolutionPreset: ResolutionPreset.high),
       );
       expect(cameraId, 0);
+      final arguments = Map<dynamic, dynamic>.from(
+        capturedCall?.arguments as Map,
+      );
+      expect(arguments['preset'], 'high');
+      expect(arguments.containsKey('videoBitrate'), isFalse);
+    });
+
+    test('sends optional target video bitrate', () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            if (methodCall.method == 'createCamera') {
+              capturedCall = methodCall;
+              return 7;
+            }
+            return null;
+          });
+
+      const camera = CameraDescription(
+        name: 'Front Camera',
+        lensDirection: LensDirection.front,
+        sensorOrientation: 270,
+      );
+      final cameraId = await platform.createCamera(
+        camera,
+        const CameraConfig(
+          resolutionPreset: ResolutionPreset.medium,
+          videoBitrate: 800000,
+        ),
+      );
+
+      expect(cameraId, 7);
+      final arguments = Map<dynamic, dynamic>.from(
+        capturedCall?.arguments as Map,
+      );
+      expect(arguments['preset'], 'medium');
+      expect(arguments['videoBitrate'], 800000);
     });
 
     test('throws CameraException when null returned', () async {
