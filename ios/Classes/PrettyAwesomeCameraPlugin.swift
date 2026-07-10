@@ -4,6 +4,7 @@ import AVFoundation
 import os.lock
 
 public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
+    static let targetVideoFrameRate: Int = 30
     static let stableRecordingAudioSampleRate: Double = 44100
     static let stableRecordingAudioChannelCount: UInt32 = 1
     static let stableRecordingAudioBitRate: Int = 128000
@@ -28,6 +29,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var lensPosition: AVCaptureDevice.Position = .back
         var videoInput: AVCaptureDeviceInput?
         var requestedPresetName: String = "high"
+        var videoBitrate: Int?
         var capturePreset: AVCaptureSession.Preset = .hd1280x720
         var captureDimensions: CMVideoDimensions = CMVideoDimensions(width: 1280, height: 720)
         var zoomFactor: CGFloat = 1.0
@@ -244,6 +246,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             disposeCamera(call: call, result: result)
         case "startRecording":
             startRecording(call: call, result: result)
+        case "getRecordingSettings":
+            getRecordingSettings(call: call, result: result)
         case "pauseRecording":
             pauseRecording(call: call, result: result)
         case "resumeRecording":
@@ -299,22 +303,65 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         let args = call.arguments as? [String: Any]
         let cameraDescription = args?["camera"] as? [String: Any]
         
-        let cameraId = nextCameraId
-        nextCameraId += 1
-        
         let lensDirection = cameraDescription?["lensDirection"] as? String ?? "front"
         let position: AVCaptureDevice.Position = lensDirection == "front" ? .front : .back
         let presetName = (args?["preset"] as? String) ?? "high"
+        let videoBitrate: Int?
+        if let videoBitrateValue = args?["videoBitrate"] {
+            guard let videoBitrateNumber = videoBitrateValue as? NSNumber,
+                  CFGetTypeID(videoBitrateNumber) != CFBooleanGetTypeID(),
+                  !CFNumberIsFloatType(videoBitrateNumber) else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "videoBitrate must be an integer", details: nil))
+                return
+            }
+            let parsedVideoBitrate = videoBitrateNumber.intValue
+            guard parsedVideoBitrate > 0 else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "videoBitrate must be greater than zero", details: nil))
+                return
+            }
+            videoBitrate = parsedVideoBitrate
+        } else {
+            videoBitrate = nil
+        }
+
+        let cameraId = nextCameraId
+        nextCameraId += 1
         
         let instance = CameraInstance(cameraId: cameraId)
         instance.lensPosition = position
         instance.requestedPresetName = presetName
+        instance.videoBitrate = videoBitrate
         
         os_unfair_lock_lock(&stateLock)
         cameras[cameraId] = instance
         os_unfair_lock_unlock(&stateLock)
         
         result(cameraId)
+    }
+
+    private func getRecordingSettings(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int else {
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+        let requestedBitrate = cameraInstance.videoBitrate.map { $0 as Any } ?? NSNull()
+        let resolvedResolution = "\(cameraInstance.captureDimensions.width)x\(cameraInstance.captureDimensions.height)"
+        let capturePreset = cameraInstance.capturePreset.rawValue
+        os_unfair_lock_unlock(&stateLock)
+
+        result([
+            "requested_bitrate": requestedBitrate,
+            "resolved_resolution": resolvedResolution,
+            "capture_preset": capturePreset
+        ])
     }
     
     private func initializeCamera(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -883,11 +930,18 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let outputWidth = videoHeight
                 let outputHeight = videoWidth
 
-                let videoSettings: [String: Any] = [
+                var videoSettings: [String: Any] = [
                     AVVideoCodecKey: AVVideoCodecType.h264,
                     AVVideoWidthKey: outputWidth,
                     AVVideoHeightKey: outputHeight
                 ]
+                if let videoBitrate = cameraInstance.videoBitrate {
+                    videoSettings[AVVideoCompressionPropertiesKey] = [
+                        AVVideoAverageBitRateKey: videoBitrate,
+                        AVVideoExpectedSourceFrameRateKey: Self.targetVideoFrameRate,
+                        AVVideoMaxKeyFrameIntervalKey: Self.targetVideoFrameRate * 2
+                    ]
+                }
                 let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
                 videoWriterInput.expectsMediaDataInRealTime = true
                 
@@ -1617,11 +1671,18 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let outputWidth = videoHeight
             let outputHeight = videoWidth
 
-            let videoSettings: [String: Any] = [
+            var videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: outputWidth,
                 AVVideoHeightKey: outputHeight
             ]
+            if let videoBitrate = cameraInstance.videoBitrate {
+                videoSettings[AVVideoCompressionPropertiesKey] = [
+                    AVVideoAverageBitRateKey: videoBitrate,
+                    AVVideoExpectedSourceFrameRateKey: Self.targetVideoFrameRate,
+                    AVVideoMaxKeyFrameIntervalKey: Self.targetVideoFrameRate * 2
+                ]
+            }
             let videoWriterInput = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
             videoWriterInput.expectsMediaDataInRealTime = true
 

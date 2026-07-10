@@ -69,6 +69,14 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError('startRecording() has not been implemented.');
   }
 
+  /// Returns the requested bitrate and resolved native recording configuration
+  /// for the camera with the given ID.
+  Future<Map<String, Object?>> getRecordingSettings(int cameraId) {
+    throw UnimplementedError(
+      'getRecordingSettings() has not been implemented.',
+    );
+  }
+
   /// Stops recording and returns the file path of the saved video,
   /// or null if recording was stopped before any frames were captured.
   Future<String?> stopRecording(int cameraId) {

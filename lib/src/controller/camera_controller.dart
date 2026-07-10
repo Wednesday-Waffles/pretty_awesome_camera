@@ -216,6 +216,12 @@ class CameraController extends ValueNotifier<CameraState> {
     }
   }
 
+  Future<Map<String, Object?>> getRecordingSettings() {
+    _assertNotDisposed('getRecordingSettings');
+    _assertInitialized('getRecordingSettings');
+    return _platform.getRecordingSettings(cameraId!);
+  }
+
   Future<void> pauseRecording() async {
     _assertInitialized('pauseRecording');
     _assertState(

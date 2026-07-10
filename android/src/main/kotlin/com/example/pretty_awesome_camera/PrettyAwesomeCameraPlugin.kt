@@ -123,6 +123,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "initializeCamera" -> initializeCamera(call, result)
             "disposeCamera" -> disposeCamera(call, result)
             "startRecording" -> startRecording(call, result)
+            "getRecordingSettings" -> getRecordingSettings(call, result)
             "pauseRecording" -> pauseRecording(call, result)
             "resumeRecording" -> resumeRecording(call, result)
             "stopRecording" -> stopRecording(call, result)
@@ -356,6 +357,26 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
             .setTargetFrameRate(Range(TARGET_FRAME_RATE_FPS, TARGET_FRAME_RATE_FPS))
             .build()
+    }
+
+    private fun getRecordingSettings(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found or not initialized", null)
+            return
+        }
+        val resolution = cameraInstance.videoCapture?.resolutionInfo?.resolution ?: run {
+            result.error("NOT_INITIALIZED", "Recording resolution not available", null)
+            return
+        }
+
+        result.success(
+            mapOf(
+                "requested_bitrate" to cameraInstance.videoBitrate,
+                "resolved_resolution" to "${resolution.width}x${resolution.height}",
+                "capture_preset" to cameraInstance.resolutionPreset
+            )
+        )
     }
 
     private fun qualitySelectorForPreset(preset: String): QualitySelector {

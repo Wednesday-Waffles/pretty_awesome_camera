@@ -13,6 +13,7 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   int nextCameraId = 1;
   int nextTextureId = 101;
+  int? lastRecordingSettingsCameraId;
   int? lastZoomCameraId;
   double? lastZoomFactor;
   String stopRecordingPath = '/tmp/test.mov';
@@ -45,6 +46,16 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<void> startRecording(int cameraId) async {}
+
+  @override
+  Future<Map<String, Object?>> getRecordingSettings(int cameraId) async {
+    lastRecordingSettingsCameraId = cameraId;
+    return {
+      'requested_bitrate': 2500000,
+      'resolved_resolution': '1280x720',
+      'capture_preset': 'high',
+    };
+  }
 
   @override
   Future<String> stopRecording(int cameraId) async => stopRecordingPath;
@@ -329,6 +340,26 @@ void main() {
     expect(platform.lastZoomFactor, 2.5);
     expect(appliedZoom, 2.5);
   });
+
+  test(
+    'getRecordingSettings delegates to the active platform camera',
+    () async {
+      final controller = CameraController(
+        description: description,
+        platform: platform,
+      );
+
+      await controller.prewarmUp();
+      final settings = await controller.getRecordingSettings();
+
+      expect(platform.lastRecordingSettingsCameraId, controller.cameraId);
+      expect(settings, {
+        'requested_bitrate': 2500000,
+        'resolved_resolution': '1280x720',
+        'capture_preset': 'high',
+      });
+    },
+  );
 
   test('setZoom after dispose throws disposed before platform call', () async {
     final controller = CameraController(
