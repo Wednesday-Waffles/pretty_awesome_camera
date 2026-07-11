@@ -71,6 +71,10 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
 
   /// Returns the requested bitrate and resolved native recording configuration
   /// for the camera with the given ID.
+  ///
+  /// Best-effort snapshot: `resolved_resolution` may be null while the native
+  /// pipeline is (re)binding — e.g. during a camera switch — and during a
+  /// switch the values may reflect the previous camera until it completes.
   Future<Map<String, Object?>> getRecordingSettings(int cameraId) {
     throw UnimplementedError(
       'getRecordingSettings() has not been implemented.',

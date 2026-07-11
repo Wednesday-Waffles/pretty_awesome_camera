@@ -5,6 +5,10 @@ import os.lock
 
 public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     static let targetVideoFrameRate: Int = 30
+    // Sanity ceiling for caller-supplied encoder bitrates — AVAssetWriter fails
+    // startWriting() on absurd values, which would otherwise surface only as a
+    // silent no-output recording. Matches Android's MAX_VIDEO_BITRATE_BPS.
+    static let maxVideoBitrateBps: Int = 100_000_000
     static let stableRecordingAudioSampleRate: Double = 44100
     static let stableRecordingAudioChannelCount: UInt32 = 1
     static let stableRecordingAudioBitRate: Int = 128000
@@ -319,6 +323,10 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 result(FlutterError(code: "INVALID_ARGUMENT", message: "videoBitrate must be greater than zero", details: nil))
                 return
             }
+            guard parsedVideoBitrate <= Self.maxVideoBitrateBps else {
+                result(FlutterError(code: "INVALID_ARGUMENT", message: "videoBitrate must be at most \(Self.maxVideoBitrateBps)", details: nil))
+                return
+            }
             videoBitrate = parsedVideoBitrate
         } else {
             videoBitrate = nil
@@ -443,8 +451,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
             let resolvedPreset = resolveCapturePreset(for: cameraInstance.requestedPresetName, session: captureSession)
             captureSession.sessionPreset = resolvedPreset
+            // getRecordingSettings reads this preset/dimensions pair under
+            // stateLock; take the same lock here so it never observes a torn
+            // pair (new preset with old dimensions).
+            os_unfair_lock_lock(&stateLock)
             cameraInstance.capturePreset = resolvedPreset
             cameraInstance.captureDimensions = dimensions(for: resolvedPreset)
+            os_unfair_lock_unlock(&stateLock)
             
             if let textureRegistry = textureRegistry {
                 guard let texture = CameraPreviewTexture(
@@ -1307,8 +1320,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 captureSession.sessionPreset = targetPreset
 
                 if !cameraInstance.isRecording {
+                    // Same locked write pair as initializeCamera — keeps the
+                    // getRecordingSettings snapshot consistent mid-switch.
+                    os_unfair_lock_lock(&self.stateLock)
                     cameraInstance.capturePreset = targetPreset
                     cameraInstance.captureDimensions = dimensions(for: targetPreset)
+                    os_unfair_lock_unlock(&self.stateLock)
                 }
 
                 // Set orientation/mirroring BEFORE committing, so the very first

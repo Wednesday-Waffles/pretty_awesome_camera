@@ -54,6 +54,12 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     private companion object {
         const val STOP_FINALIZE_TIMEOUT_MS = 10_000L
         const val TARGET_FRAME_RATE_FPS = 30
+
+        // Sanity ceiling for caller-supplied encoder bitrates. CameraX clamps
+        // the target into the encoder's supported range at runtime, but iOS
+        // AVAssetWriter fails startWriting() on absurd values — both platforms
+        // reject early with the same bound so behavior stays symmetric.
+        const val MAX_VIDEO_BITRATE_BPS = 100_000_000
     }
 
     private lateinit var channel: MethodChannel
@@ -212,6 +218,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             result.error("INVALID_ARGUMENT", "videoBitrate must be greater than zero", null)
             return
         }
+        if (videoBitrate != null && videoBitrate > MAX_VIDEO_BITRATE_BPS) {
+            result.error("INVALID_ARGUMENT", "videoBitrate must be at most $MAX_VIDEO_BITRATE_BPS", null)
+            return
+        }
         
         val cameraId = nextCameraId++
         cameras[cameraId] = CameraInstance(
@@ -365,15 +375,16 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             result.error("INVALID_CAMERA", "Camera not found or not initialized", null)
             return
         }
-        val resolution = cameraInstance.videoCapture?.resolutionInfo?.resolution ?: run {
-            result.error("NOT_INITIALIZED", "Recording resolution not available", null)
-            return
-        }
+        // Best-effort snapshot: while the pipeline is (re)binding — e.g. during
+        // a camera switch, when use cases are temporarily unbound — the video
+        // use case has no resolved resolution yet. Report what is known instead
+        // of erroring so callers never race the bind window.
+        val resolution = cameraInstance.videoCapture?.resolutionInfo?.resolution
 
         result.success(
             mapOf(
                 "requested_bitrate" to cameraInstance.videoBitrate,
-                "resolved_resolution" to "${resolution.width}x${resolution.height}",
+                "resolved_resolution" to resolution?.let { "${it.width}x${it.height}" },
                 "capture_preset" to cameraInstance.resolutionPreset
             )
         )
