@@ -206,22 +206,24 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
 
         val videoBitrateValue = call.argument<Any>("videoBitrate")
-        val videoBitrate = when (videoBitrateValue) {
+        val videoBitrateLong = when (videoBitrateValue) {
             null -> null
-            is Number -> videoBitrateValue.toInt()
+            is Int -> videoBitrateValue.toLong()
+            is Long -> videoBitrateValue
             else -> {
                 result.error("INVALID_ARGUMENT", "videoBitrate must be an integer", null)
                 return
             }
         }
-        if (videoBitrate != null && videoBitrate <= 0) {
+        if (videoBitrateLong != null && videoBitrateLong <= 0) {
             result.error("INVALID_ARGUMENT", "videoBitrate must be greater than zero", null)
             return
         }
-        if (videoBitrate != null && videoBitrate > MAX_VIDEO_BITRATE_BPS) {
+        if (videoBitrateLong != null && videoBitrateLong > MAX_VIDEO_BITRATE_BPS) {
             result.error("INVALID_ARGUMENT", "videoBitrate must be at most $MAX_VIDEO_BITRATE_BPS", null)
             return
         }
+        val videoBitrate = videoBitrateLong?.toInt()
         
         val cameraId = nextCameraId++
         cameras[cameraId] = CameraInstance(
