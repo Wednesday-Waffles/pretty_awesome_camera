@@ -1,5 +1,6 @@
 export 'src/controller/camera_controller.dart';
 export 'src/models/audio_device_changed_event.dart';
+export 'src/models/audio_level_event.dart';
 export 'src/models/camera_builder_state.dart';
 export 'src/models/camera_config.dart';
 export 'src/models/camera_description.dart';

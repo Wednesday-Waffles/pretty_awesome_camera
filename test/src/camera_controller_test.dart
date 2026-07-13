@@ -8,6 +8,8 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
       StreamController<RecordingState>.broadcast();
   final StreamController<AudioDeviceChangedEvent> audioDeviceChangedController =
       StreamController<AudioDeviceChangedEvent>.broadcast();
+  final StreamController<AudioLevelEvent> audioLevelController =
+      StreamController<AudioLevelEvent>.broadcast();
   List<CameraDescription> availableCameras = [];
   int getAvailableCamerasCallCount = 0;
 
@@ -44,8 +46,13 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
     );
   }
 
+  Map<String, Object?>? startInfo = const {
+    'audioPortType': 'MicrophoneBuiltIn',
+    'isBluetoothInput': false,
+  };
+
   @override
-  Future<void> startRecording(int cameraId) async {}
+  Future<Map<String, Object?>?> startRecording(int cameraId) async => startInfo;
 
   @override
   Future<Map<String, Object?>> getRecordingSettings(int cameraId) async {
@@ -84,6 +91,11 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   @override
   Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
     return audioDeviceChangedController.stream;
+  }
+
+  @override
+  Stream<AudioLevelEvent> onAudioLevel(int cameraId) {
+    return audioLevelController.stream;
   }
 
   @override

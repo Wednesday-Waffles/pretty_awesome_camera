@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../models/audio_device_changed_event.dart';
+import '../models/audio_level_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
@@ -35,6 +36,21 @@ class CameraController extends ValueNotifier<CameraState> {
   /// Stream of audio input device change events.
   Stream<AudioDeviceChangedEvent> get onAudioDeviceChanged =>
       _audioDeviceChangedController.stream;
+
+  StreamSubscription<AudioLevelEvent>? _audioLevelSubscription;
+  final StreamController<AudioLevelEvent> _audioLevelController =
+      StreamController<AudioLevelEvent>.broadcast();
+
+  /// Throttled stream of audio-level samples. See [AudioLevelEvent] for
+  /// per-platform cadence/coverage and the staleness caveat.
+  Stream<AudioLevelEvent> get onAudioLevel => _audioLevelController.stream;
+
+  Map<String, Object?>? _lastRecordingStartInfo;
+
+  /// Audio-route info reported by the platform when the most recent
+  /// recording started (null before the first recording, or when the native
+  /// build predates start-info).
+  Map<String, Object?>? get lastRecordingStartInfo => _lastRecordingStartInfo;
 
   CameraController({
     CameraDescription? description,
@@ -192,7 +208,10 @@ class CameraController extends ValueNotifier<CameraState> {
     });
   }
 
-  Future<void> startRecording() async {
+  /// Starts recording and returns the platform's start-info map (audio route
+  /// stamp; null when unavailable). The result resolves only after the
+  /// native recorder confirms engagement.
+  Future<Map<String, Object?>?> startRecording() async {
     _assertInitialized('startRecording');
     _assertState(
       allows: (state) =>
@@ -206,8 +225,10 @@ class CameraController extends ValueNotifier<CameraState> {
     );
 
     try {
-      await _platform.startRecording(cameraId!);
+      final startInfo = await _platform.startRecording(cameraId!);
+      _lastRecordingStartInfo = startInfo;
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
+      return startInfo;
     } on CameraException catch (error) {
       _setValueSafely(
         previous.copyWith(state: _stateWithError(previous.state, error)),
@@ -489,6 +510,8 @@ class CameraController extends ValueNotifier<CameraState> {
     _recordingStateSubscription = null;
     await _audioDeviceSubscription?.cancel();
     _audioDeviceSubscription = null;
+    await _audioLevelSubscription?.cancel();
+    _audioLevelSubscription = null;
 
     if (currentCameraId != null) {
       await _platform.disposeCamera(currentCameraId);
@@ -562,6 +585,7 @@ class CameraController extends ValueNotifier<CameraState> {
       final initializationResult = await _platform.initializeCamera(cameraId);
       await _subscribeToRecordingState(cameraId);
       await _subscribeToAudioDeviceChanged(cameraId);
+      await _subscribeToAudioLevel(cameraId);
 
       _setValueSafely(
         _cameraSnapshot.copyWith(
@@ -654,6 +678,18 @@ class CameraController extends ValueNotifier<CameraState> {
             debugPrint(
               'pretty_awesome_camera audio device stream error: $error',
             );
+          },
+        );
+  }
+
+  Future<void> _subscribeToAudioLevel(int cameraId) async {
+    await _audioLevelSubscription?.cancel();
+    _audioLevelSubscription = _platform
+        .onAudioLevel(cameraId)
+        .listen(
+          _audioLevelController.add,
+          onError: (Object error, StackTrace stackTrace) {
+            debugPrint('pretty_awesome_camera audio level stream error: $error');
           },
         );
   }
@@ -811,6 +847,13 @@ class CameraController extends ValueNotifier<CameraState> {
     }
     _audioDeviceSubscription = null;
     unawaited(_audioDeviceChangedController.close());
+
+    final audioLevelSubscription = _audioLevelSubscription;
+    if (audioLevelSubscription != null) {
+      unawaited(audioLevelSubscription.cancel());
+    }
+    _audioLevelSubscription = null;
+    unawaited(_audioLevelController.close());
 
     final currentCameraId = cameraId;
     if (currentCameraId != null) {

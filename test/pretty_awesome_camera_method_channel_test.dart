@@ -713,4 +713,71 @@ void main() {
       expect(event.isBluetooth, true);
     });
   });
+
+  group('onAudioLevel', () {
+    test('returns stream of audio level events', () async {
+      const EventChannel eventChannel = EventChannel(
+        'pretty_awesome_camera/audio_level_0',
+      );
+
+      final mockEvent = {
+        'amplitude': 0.37,
+        'peakDbfs': -8.6,
+        'averageDbfs': -22.0,
+        'audioState': 'unknown',
+        'timestampMs': 111,
+      };
+
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockStreamHandler(
+            eventChannel,
+            MockStreamHandler.inline(
+              onListen: (arguments, sink) {
+                sink.success(mockEvent);
+              },
+              onCancel: (arguments) {},
+            ),
+          );
+
+      final stream = platform.onAudioLevel(0);
+      final event = await stream.first;
+      expect(event, isA<AudioLevelEvent>());
+      expect(event.amplitude, 0.37);
+      expect(event.peakDbfs, -8.6);
+      expect(event.averageDbfs, -22.0);
+      expect(event.audioState, 'unknown');
+      expect(event.timestampMs, 111);
+    });
+  });
+
+  group('startRecording start-info', () {
+    test('returns the platform start-info map', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(platform.methodChannel, (methodCall) async {
+            if (methodCall.method == 'startRecording') {
+              return {
+                'audioPortType': 'BluetoothHFP',
+                'audioDeviceName': 'AirPods',
+                'isBluetoothInput': true,
+              };
+            }
+            return null;
+          });
+
+      final startInfo = await platform.startRecording(0);
+      expect(startInfo, isNotNull);
+      expect(startInfo!['audioPortType'], 'BluetoothHFP');
+      expect(startInfo['isBluetoothInput'], true);
+    });
+
+    test('returns null when the native build predates start-info', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(platform.methodChannel, (methodCall) async {
+            return null;
+          });
+
+      final startInfo = await platform.startRecording(0);
+      expect(startInfo, isNull);
+    });
+  });
 }

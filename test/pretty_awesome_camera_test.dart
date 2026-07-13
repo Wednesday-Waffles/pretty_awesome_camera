@@ -29,7 +29,7 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
-  Future<void> startRecording(int cameraId) {
+  Future<Map<String, Object?>?> startRecording(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -70,6 +70,11 @@ class MockPrettyAwesomeCameraPlatform
 
   @override
   Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Stream<AudioLevelEvent> onAudioLevel(int cameraId) {
     throw UnimplementedError();
   }
 
@@ -116,7 +121,7 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<void> startRecording(int cameraId) {
+  Future<Map<String, Object?>?> startRecording(int cameraId) {
     throw UnimplementedError();
   }
 
