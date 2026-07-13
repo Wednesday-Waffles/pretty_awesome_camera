@@ -95,4 +95,55 @@ internal class PrettyAwesomeCameraPluginTest {
             null
         )
     }
+
+    @Test
+    fun onMethodCall_createCamera_rejectsFractionalVideoBitrate() {
+        val plugin = PrettyAwesomeCameraPlugin()
+        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
+
+        plugin.onMethodCall(createCameraCall(videoBitrate = 2_500_000.5), mockResult)
+
+        Mockito.verify(mockResult).error(
+            "INVALID_ARGUMENT",
+            "videoBitrate must be an integer",
+            null
+        )
+    }
+
+    @Test
+    fun onMethodCall_createCamera_rejectsVideoBitrateAboveSanityCeiling() {
+        val plugin = PrettyAwesomeCameraPlugin()
+        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
+
+        plugin.onMethodCall(createCameraCall(videoBitrate = 100_000_001L), mockResult)
+
+        Mockito.verify(mockResult).error(
+            "INVALID_ARGUMENT",
+            "videoBitrate must be at most 100000000",
+            null
+        )
+    }
+
+    @Test
+    fun onMethodCall_createCamera_acceptsVideoBitrateAtSanityCeiling() {
+        val plugin = PrettyAwesomeCameraPlugin()
+        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
+
+        plugin.onMethodCall(createCameraCall(videoBitrate = 100_000_000L), mockResult)
+
+        Mockito.verify(mockResult).success(0)
+    }
+
+    private fun createCameraCall(videoBitrate: Any): MethodCall = MethodCall(
+        "createCamera",
+        mapOf(
+            "camera" to mapOf(
+                "name" to "Back Camera",
+                "lensDirection" to "back",
+                "sensorOrientation" to 90
+            ),
+            "preset" to "medium",
+            "videoBitrate" to videoBitrate
+        )
+    )
 }

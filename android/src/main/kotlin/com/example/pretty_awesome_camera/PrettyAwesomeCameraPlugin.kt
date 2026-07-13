@@ -54,6 +54,12 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     private companion object {
         const val STOP_FINALIZE_TIMEOUT_MS = 10_000L
         const val TARGET_FRAME_RATE_FPS = 30
+
+        // Sanity ceiling for caller-supplied encoder bitrates. CameraX clamps
+        // the target into the encoder's supported range at runtime, but iOS
+        // AVAssetWriter fails startWriting() on absurd values — both platforms
+        // reject early with the same bound so behavior stays symmetric.
+        const val MAX_VIDEO_BITRATE_BPS = 100_000_000
     }
 
     private lateinit var channel: MethodChannel
@@ -123,6 +129,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "initializeCamera" -> initializeCamera(call, result)
             "disposeCamera" -> disposeCamera(call, result)
             "startRecording" -> startRecording(call, result)
+            "getRecordingSettings" -> getRecordingSettings(call, result)
             "pauseRecording" -> pauseRecording(call, result)
             "resumeRecording" -> resumeRecording(call, result)
             "stopRecording" -> stopRecording(call, result)
@@ -199,18 +206,24 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
 
         val videoBitrateValue = call.argument<Any>("videoBitrate")
-        val videoBitrate = when (videoBitrateValue) {
+        val videoBitrateLong = when (videoBitrateValue) {
             null -> null
-            is Number -> videoBitrateValue.toInt()
+            is Int -> videoBitrateValue.toLong()
+            is Long -> videoBitrateValue
             else -> {
                 result.error("INVALID_ARGUMENT", "videoBitrate must be an integer", null)
                 return
             }
         }
-        if (videoBitrate != null && videoBitrate <= 0) {
+        if (videoBitrateLong != null && videoBitrateLong <= 0) {
             result.error("INVALID_ARGUMENT", "videoBitrate must be greater than zero", null)
             return
         }
+        if (videoBitrateLong != null && videoBitrateLong > MAX_VIDEO_BITRATE_BPS) {
+            result.error("INVALID_ARGUMENT", "videoBitrate must be at most $MAX_VIDEO_BITRATE_BPS", null)
+            return
+        }
+        val videoBitrate = videoBitrateLong?.toInt()
         
         val cameraId = nextCameraId++
         cameras[cameraId] = CameraInstance(
@@ -356,6 +369,27 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             .setMirrorMode(MirrorMode.MIRROR_MODE_ON_FRONT_ONLY)
             .setTargetFrameRate(Range(TARGET_FRAME_RATE_FPS, TARGET_FRAME_RATE_FPS))
             .build()
+    }
+
+    private fun getRecordingSettings(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found or not initialized", null)
+            return
+        }
+        // Best-effort snapshot: while the pipeline is (re)binding — e.g. during
+        // a camera switch, when use cases are temporarily unbound — the video
+        // use case has no resolved resolution yet. Report what is known instead
+        // of erroring so callers never race the bind window.
+        val resolution = cameraInstance.videoCapture?.resolutionInfo?.resolution
+
+        result.success(
+            mapOf(
+                "requested_bitrate" to cameraInstance.videoBitrate,
+                "resolved_resolution" to resolution?.let { "${it.width}x${it.height}" },
+                "capture_preset" to cameraInstance.resolutionPreset
+            )
+        )
     }
 
     private fun qualitySelectorForPreset(preset: String): QualitySelector {

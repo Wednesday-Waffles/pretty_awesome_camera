@@ -84,6 +84,69 @@ void main() {
     });
   });
 
+  group('getRecordingSettings', () {
+    test('sends camera ID and returns typed flat settings map', () async {
+      MethodCall? capturedCall;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            capturedCall = methodCall;
+            return <dynamic, dynamic>{
+              'requested_bitrate': 2500000,
+              'resolved_resolution': '1280x720',
+              'capture_preset': 'high',
+            };
+          });
+
+      final settings = await platform.getRecordingSettings(7);
+
+      expect(capturedCall?.method, 'getRecordingSettings');
+      expect(capturedCall?.arguments, {'cameraId': 7});
+      expect(settings, {
+        'requested_bitrate': 2500000,
+        'resolved_resolution': '1280x720',
+        'capture_preset': 'high',
+      });
+    });
+
+    test('preserves a null requested bitrate', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            return <dynamic, dynamic>{
+              'requested_bitrate': null,
+              'resolved_resolution': '640x480',
+              'capture_preset': 'medium',
+            };
+          });
+
+      final settings = await platform.getRecordingSettings(0);
+
+      expect(settings.keys.toSet(), {
+        'requested_bitrate',
+        'resolved_resolution',
+        'capture_preset',
+      });
+      expect(settings['requested_bitrate'], isNull);
+    });
+
+    test('throws CameraException invalid_response on null payload', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            return null;
+          });
+
+      await expectLater(
+        platform.getRecordingSettings(0),
+        throwsA(
+          isA<CameraException>().having(
+            (error) => error.code,
+            'code',
+            'invalid_response',
+          ),
+        ),
+      );
+    });
+  });
+
   group('MissingPluginException mapping', () {
     test(
       'method wrappers throw CameraException with NOT_IMPLEMENTED',
@@ -112,6 +175,7 @@ void main() {
             await platform.startRecording(0);
             return null;
           },
+          'getRecordingSettings': () => platform.getRecordingSettings(0),
           'stopRecording': () => platform.stopRecording(0),
           'pauseRecording': () async {
             await platform.pauseRecording(0);

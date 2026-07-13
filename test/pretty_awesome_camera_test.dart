@@ -34,6 +34,11 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
+  Future<Map<String, Object?>> getRecordingSettings(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
   Future<String> stopRecording(int cameraId) {
     throw UnimplementedError();
   }
@@ -220,6 +225,13 @@ void main() {
     test('startRecording throws UnimplementedError', () {
       expect(
         () => platform.startRecording(0),
+        throwsA(isA<UnimplementedError>()),
+      );
+    });
+
+    test('getRecordingSettings throws UnimplementedError', () {
+      expect(
+        () => platform.getRecordingSettings(0),
         throwsA(isA<UnimplementedError>()),
       );
     });

@@ -162,6 +162,24 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
+  Future<Map<String, Object?>> getRecordingSettings(int cameraId) async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'getRecordingSettings',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to get recording settings',
+    );
+    if (result == null) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned null recording settings',
+      );
+    }
+    return Map<dynamic, dynamic>.from(
+      result as Map,
+    ).map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  @override
   Future<String?> stopRecording(int cameraId) async {
     final filePath = await _invokeCameraMethod<String>(
       'stopRecording',
