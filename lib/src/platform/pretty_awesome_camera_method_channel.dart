@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../models/audio_device_changed_event.dart';
+import '../models/audio_level_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
@@ -119,6 +120,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
         'camera': camera.toJson(),
         'preset': config.resolutionPreset.name,
         if (config.videoBitrate != null) 'videoBitrate': config.videoBitrate,
+        if (config.preferBluetoothMic) 'preferBluetoothMic': true,
       },
       fallbackMessage: 'Failed to create camera',
     );
@@ -153,12 +155,20 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<void> startRecording(int cameraId) async {
-    await _invokeCameraMethod<void>(
+  Future<Map<String, Object?>?> startRecording(int cameraId) async {
+    final result = await _invokeCameraMethod<dynamic>(
       'startRecording',
       arguments: {'cameraId': cameraId},
       fallbackMessage: 'Failed to start recording',
     );
+    if (result is! Map) {
+      // Older native builds resolved with null; treat any non-map result as
+      // "start info unavailable" rather than failing the recording.
+      return null;
+    }
+    return Map<dynamic, dynamic>.from(
+      result,
+    ).map((key, value) => MapEntry(key.toString(), value as Object?));
   }
 
   @override
@@ -260,6 +270,22 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
     return audioDeviceChannel
         .receiveBroadcastStream()
         .map((event) => AudioDeviceChangedEvent.fromMap(event as Map))
+        .handleError((error) {
+          throw CameraException(
+            code: 'stream_error',
+            message: error.toString(),
+          );
+        });
+  }
+
+  @override
+  Stream<AudioLevelEvent> onAudioLevel(int cameraId) {
+    final audioLevelChannel = EventChannel(
+      'pretty_awesome_camera/audio_level_$cameraId',
+    );
+    return audioLevelChannel
+        .receiveBroadcastStream()
+        .map((event) => AudioLevelEvent.fromMap(event as Map))
         .handleError((error) {
           throw CameraException(
             code: 'stream_error',

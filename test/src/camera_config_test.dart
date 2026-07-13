@@ -13,6 +13,7 @@ void main() {
       'resolutionPreset': 'medium',
       'lensDirection': 'front',
       'videoBitrate': 800000,
+      'preferBluetoothMic': false,
     });
   });
 
@@ -27,5 +28,22 @@ void main() {
       800000,
     );
     expect(config.copyWith(clearVideoBitrate: true).videoBitrate, isNull);
+  });
+
+  test('preferBluetoothMic defaults false, serializes, and copies', () {
+    const config = CameraConfig();
+    expect(config.preferBluetoothMic, isFalse);
+    expect(config.toJson()['preferBluetoothMic'], false);
+
+    final enabled = config.copyWith(preferBluetoothMic: true);
+    expect(enabled.preferBluetoothMic, isTrue);
+    expect(enabled.toJson()['preferBluetoothMic'], true);
+    // Unrelated copyWith calls must not reset the flag.
+    expect(
+      enabled
+          .copyWith(resolutionPreset: ResolutionPreset.low)
+          .preferBluetoothMic,
+      isTrue,
+    );
   });
 }

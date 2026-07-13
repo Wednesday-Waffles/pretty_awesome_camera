@@ -23,7 +23,7 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<void> startRecording(int cameraId) async {}
+  Future<Map<String, Object?>?> startRecording(int cameraId) async => null;
 
   @override
   Future<String> stopRecording(int cameraId) async => '/tmp/test.mov';
@@ -47,6 +47,10 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
   @override
   Stream<AudioDeviceChangedEvent> onAudioDeviceChanged(int cameraId) =>
       const Stream<AudioDeviceChangedEvent>.empty();
+
+  @override
+  Stream<AudioLevelEvent> onAudioLevel(int cameraId) =>
+      const Stream<AudioLevelEvent>.empty();
 
   @override
   Future<bool> canSwitchCamera(int cameraId) async => true;

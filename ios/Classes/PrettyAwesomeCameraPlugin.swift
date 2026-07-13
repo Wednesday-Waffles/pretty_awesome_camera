@@ -12,6 +12,10 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     static let stableRecordingAudioSampleRate: Double = 44100
     static let stableRecordingAudioChannelCount: UInt32 = 1
     static let stableRecordingAudioBitRate: Int = 128000
+    // Audio buffers arrive at ~43-48/s (1024-frame buffers at 44.1/48 kHz);
+    // emitting every 11 buffers throttles the level stream to ~4 Hz without
+    // needing a timer.
+    static let audioLevelEmitEveryNBuffers: Int = 11
 
     private var cameras: [Int: CameraInstance] = [:]
     private var nextCameraId = 0
@@ -20,6 +24,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     private var streamHandlers: [Int: RecordingStateStreamHandler] = [:]
     private var audioEventChannels: [Int: FlutterEventChannel] = [:]
     private var audioStreamHandlers: [Int: AudioDeviceStreamHandler] = [:]
+    private var audioLevelEventChannels: [Int: FlutterEventChannel] = [:]
+    private var audioLevelStreamHandlers: [Int: AudioLevelStreamHandler] = [:]
     private var registrar: FlutterPluginRegistrar?
     private let sessionQueue = DispatchQueue(label: "com.prettyawesome.camera.session")
     private var stateLock = os_unfair_lock()
@@ -41,8 +47,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var assetWriter: AVAssetWriter?
         var videoWriterInput: AVAssetWriterInput?
         var audioWriterInput: AVAssetWriterInput?
-        var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
         var audioDataOutput: AVCaptureAudioDataOutput?
+        // Audio-level metering accumulators. Confined to the audio delegate's
+        // serial queue — do NOT touch from other threads and do NOT take
+        // recordingLock for them.
+        fileprivate var meteringBufferCount: Int = 0
+        fileprivate var meteringWindowPeak: Float = 0
+        fileprivate var meteringSumSquares: Double = 0
+        fileprivate var meteringSampleCount: Int = 0
         fileprivate var recordingLock = os_unfair_lock()
         fileprivate var _isRecording: Bool = false
         fileprivate var _isPaused: Bool = false
@@ -63,7 +75,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _audioRouteSwitchCount: Int = 0
         var activeFrameRateMin: CMTime?
         var activeFrameRateMax: CMTime?
-        var isUsingBluetoothInput: Bool = false
         var actualAudioSampleRate: Double = 44100
         var recordingAudioSampleRate: Double = 0
         var recordingAudioChannelCount: UInt32 = 1
@@ -498,7 +509,40 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 audioChannel.setStreamHandler(audioStreamHandler)
                 audioEventChannels[cameraId] = audioChannel
                 audioStreamHandlers[cameraId] = audioStreamHandler
+
+                let audioLevelChannel = FlutterEventChannel(
+                    name: "pretty_awesome_camera/audio_level_\(cameraId)",
+                    binaryMessenger: registrar.messenger()
+                )
+                let audioLevelStreamHandler = AudioLevelStreamHandler()
+                audioLevelChannel.setStreamHandler(audioLevelStreamHandler)
+                os_unfair_lock_lock(&stateLock)
+                audioLevelEventChannels[cameraId] = audioLevelChannel
+                audioLevelStreamHandlers[cameraId] = audioLevelStreamHandler
+                os_unfair_lock_unlock(&stateLock)
             }
+
+            // Session-level failures (hardware loss, media-services reset) were
+            // previously invisible mid-recording. Surface them on the audio
+            // event channel so Dart can recover instead of hanging.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleCaptureSessionRuntimeError(_:)),
+                name: .AVCaptureSessionRuntimeError,
+                object: captureSession
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleCaptureSessionWasInterrupted(_:)),
+                name: .AVCaptureSessionWasInterrupted,
+                object: captureSession
+            )
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleCaptureSessionInterruptionEnded(_:)),
+                name: .AVCaptureSessionInterruptionEnded,
+                object: captureSession
+            )
             
             sessionQueue.async { [weak self, weak cameraInstance] in
                 guard let self = self, let cameraInstance = cameraInstance else { return }
@@ -536,12 +580,30 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         os_unfair_lock_unlock(&stateLock)
         
         if cameraInstance.isRecording, let assetWriter = cameraInstance.assetWriter {
+            // Dispose mid-recording is terminal: nobody will ever consume this
+            // file, so finish the writer and delete the orphan instead of
+            // leaving it in tmp.
             cameraInstance.isRecording = false
+            let abandonedURL = cameraInstance.recordingURL
+            NSLog("%@", "PrettyAwesomeCameraPlugin: disposeCamera called mid-recording; abandoning and deleting \(abandonedURL?.lastPathComponent ?? "<no file>")")
             if assetWriter.status == .writing {
-                assetWriter.finishWriting {}
+                assetWriter.finishWriting {
+                    if let abandonedURL {
+                        try? FileManager.default.removeItem(at: abandonedURL)
+                    }
+                }
+            } else if let abandonedURL {
+                try? FileManager.default.removeItem(at: abandonedURL)
             }
+            cameraInstance.recordingURL = nil
         }
-        
+
+        if let captureSession = cameraInstance.captureSession {
+            NotificationCenter.default.removeObserver(self, name: .AVCaptureSessionRuntimeError, object: captureSession)
+            NotificationCenter.default.removeObserver(self, name: .AVCaptureSessionWasInterrupted, object: captureSession)
+            NotificationCenter.default.removeObserver(self, name: .AVCaptureSessionInterruptionEnded, object: captureSession)
+        }
+
         cameraInstance.captureSession?.stopRunning()
         cameraInstance.videoInput = nil
         if let textureId = cameraInstance.textureId {
@@ -560,7 +622,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             audioEventChannels.removeValue(forKey: cameraId)
         }
         audioStreamHandlers.removeValue(forKey: cameraId)
-        
+
+        os_unfair_lock_lock(&stateLock)
+        let audioLevelChannel = audioLevelEventChannels.removeValue(forKey: cameraId)
+        audioLevelStreamHandlers.removeValue(forKey: cameraId)
+        os_unfair_lock_unlock(&stateLock)
+        audioLevelChannel?.setStreamHandler(nil)
+
         os_unfair_lock_lock(&stateLock)
         let remainingCameras = cameras.count
         let hasActiveRecording = cameras.values.contains { $0.isRecording }
@@ -886,12 +954,38 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
 
             NSLog("%@", "PrettyAwesomeCameraPlugin: Audio session interruption ended. shouldResume=\(options.contains(.shouldResume))")
-            sendAudioEvent(currentAudioRouteEvent(event: "audioInterruptionEnded"))
+            // No native auto-restart here by design: Dart-driven recovery (via
+            // resumeRecording's session-recovery path) stays authoritative.
+            var endedEvent = currentAudioRouteEvent(event: "audioInterruptionEnded")
+            endedEvent["shouldResume"] = options.contains(.shouldResume)
+            sendAudioEvent(endedEvent)
         @unknown default:
             NSLog("%@", "PrettyAwesomeCameraPlugin: Unknown audio session interruption type: \(type.rawValue)")
         }
     }
     
+    @objc private func handleCaptureSessionRuntimeError(_ notification: Notification) {
+        let error = notification.userInfo?[AVCaptureSessionErrorKey] as? NSError
+        NSLog("%@", "PrettyAwesomeCameraPlugin: [SESSION-ERROR] AVCaptureSession runtime error: \(error?.localizedDescription ?? "unknown") code=\(error?.code ?? 0)")
+        var eventData = currentAudioRouteEvent(event: "sessionRuntimeError")
+        eventData["errorDescription"] = error?.localizedDescription ?? "unknown"
+        eventData["errorCode"] = error?.code ?? 0
+        sendAudioEvent(eventData)
+    }
+
+    @objc private func handleCaptureSessionWasInterrupted(_ notification: Notification) {
+        let reasonValue = notification.userInfo?[AVCaptureSessionInterruptionReasonKey] as? Int ?? -1
+        NSLog("%@", "PrettyAwesomeCameraPlugin: [SESSION-ERROR] AVCaptureSession interrupted. reason=\(reasonValue)")
+        var eventData = currentAudioRouteEvent(event: "sessionInterrupted")
+        eventData["interruptionReason"] = reasonValue
+        sendAudioEvent(eventData)
+    }
+
+    @objc private func handleCaptureSessionInterruptionEnded(_ notification: Notification) {
+        NSLog("%@", "PrettyAwesomeCameraPlugin: [SESSION-ERROR] AVCaptureSession interruption ended.")
+        sendAudioEvent(currentAudioRouteEvent(event: "sessionInterruptionEnded"))
+    }
+
     private func startRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
         guard let args = call.arguments as? [String: Any],
               let cameraId = args["cameraId"] as? Int else {
@@ -909,13 +1003,22 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         os_unfair_lock_unlock(&stateLock)
 
         sessionQueue.async {
+            // Native re-entrancy guard: a duplicate startRecording would build a
+            // second AVAssetWriter and orphan the first. Checked on sessionQueue,
+            // where isRecording is set, so racing calls serialize here.
+            if cameraInstance.isRecording {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "ALREADY_RECORDING", message: "A recording is already in progress", details: nil))
+                }
+                return
+            }
+
             let audioSession = AVAudioSession.sharedInstance()
             let currentRoute = audioSession.currentRoute
             let isBluetoothInput = currentRoute.inputs.contains { port in
-                port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
+                Self.isBluetoothPort(port.portType)
             }
-            cameraInstance.isUsingBluetoothInput = isBluetoothInput
-            
+
             if let audioOutput = cameraInstance.audioDataOutput,
                let connection = audioOutput.connection(with: .audio) {
                 for port in connection.inputPorts {
@@ -932,7 +1035,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             let tempDir = FileManager.default.temporaryDirectory
-            let recordingURL = tempDir.appendingPathComponent("recording_\(Int(Date().timeIntervalSince1970)).mov")
+            // UUID, not epoch seconds: two recordings started within the same
+            // second must never overwrite each other.
+            let recordingURL = tempDir.appendingPathComponent("recording_\(UUID().uuidString).mov")
             
             do {
                 let assetWriter = try AVAssetWriter(url: recordingURL, fileType: .mov)
@@ -973,7 +1078,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.assetWriter = assetWriter
                 cameraInstance.videoWriterInput = videoWriterInput
                 cameraInstance.audioWriterInput = audioWriterInput
-                cameraInstance.pixelBufferAdaptor = nil
 
                 // Capture frame rate configuration for preservation during camera switches
                 if let captureSession = cameraInstance.captureSession {
@@ -1013,8 +1117,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._audioRouteSwitchCount = 0
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
+                // Route stamp for the caller's start telemetry: which input the
+                // recording began on. Mirrors Android's start-info payload shape.
+                let startInfo: [String: Any] = [
+                    "audioPortType": portType,
+                    "audioDeviceName": deviceName,
+                    "isBluetoothInput": isBluetoothInput
+                ]
                 DispatchQueue.main.async {
-                    result(nil)
+                    result(startInfo)
                 }
             } catch {
                 DispatchQueue.main.async {
@@ -1667,12 +1778,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             return
         }
 
-        let audioSession = AVAudioSession.sharedInstance()
-        let currentRoute = audioSession.currentRoute
-        let isBluetoothInput = currentRoute.inputs.contains { port in
-            port.portType == .bluetoothHFP || port.portType == .bluetoothA2DP
-        }
-
         let tempDir = FileManager.default.temporaryDirectory
         let warmupURL = tempDir.appendingPathComponent("warmup_\(cameraInstance.cameraId).mov")
 
@@ -1741,7 +1846,13 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         os_unfair_lock_unlock(&stateLock)
         
         guard let cameraInstance = targetCameraInstance else { return }
-        
+
+        // Metering runs BEFORE any recording-state guards so levels flow during
+        // preview and pause as well; it deliberately reads PCM directly instead
+        // of AVCaptureAudioChannel.averagePowerLevel (stuck at -120 dB on
+        // iOS 26.4-26.5, Apple FB22272504).
+        processAudioLevelMetering(sampleBuffer, for: cameraInstance)
+
         var detectedChannels: UInt32 = 1
         if let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer) {
             let audioStreamBasicDescription = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription)
@@ -1753,9 +1864,6 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                         NSLog("%@", "PrettyAwesomeCameraPlugin: [AUDIO-RATE] input sample rate changed \(cameraInstance.actualAudioSampleRate) -> \(detectedSampleRate) (recording targetRate=\(cameraInstance.recordingAudioSampleRate))")
                     }
                     cameraInstance.actualAudioSampleRate = detectedSampleRate
-                }
-                 if cameraInstance.isRecording && cameraInstance.recordingAudioChannelCount == 0 {
-                    cameraInstance.recordingAudioChannelCount = 1
                 }
             }
         }
@@ -2167,6 +2275,131 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
     }
 }
 
+// MARK: - Audio level metering
+
+extension PrettyAwesomeCameraPlugin {
+    /// Accumulates per-buffer peak/RMS and emits a throttled level event
+    /// (~4 Hz at typical mic buffer cadence — no timer needed). Runs on the
+    /// audio delegate's serial queue; the metering accumulators are confined
+    /// to that queue, so no lock is taken (and recordingLock deliberately
+    /// stays untouched here to avoid contending with the writer paths).
+    fileprivate func processAudioLevelMetering(_ sampleBuffer: CMSampleBuffer, for cameraInstance: CameraInstance) {
+        os_unfair_lock_lock(&stateLock)
+        let handler = audioLevelStreamHandlers[cameraInstance.cameraId]
+        os_unfair_lock_unlock(&stateLock)
+        guard let handler, handler.hasListener else { return }
+
+        guard let levels = Self.computeAudioLevels(from: sampleBuffer) else { return }
+
+        cameraInstance.meteringBufferCount += 1
+        cameraInstance.meteringWindowPeak = max(cameraInstance.meteringWindowPeak, levels.peak)
+        cameraInstance.meteringSumSquares += levels.sumSquares
+        cameraInstance.meteringSampleCount += levels.sampleCount
+
+        guard cameraInstance.meteringBufferCount >= Self.audioLevelEmitEveryNBuffers else { return }
+
+        let windowPeak = cameraInstance.meteringWindowPeak
+        let windowRms = cameraInstance.meteringSampleCount > 0
+            ? Float((cameraInstance.meteringSumSquares / Double(cameraInstance.meteringSampleCount)).squareRoot())
+            : 0
+        cameraInstance.meteringBufferCount = 0
+        cameraInstance.meteringWindowPeak = 0
+        cameraInstance.meteringSumSquares = 0
+        cameraInstance.meteringSampleCount = 0
+
+        // amplitude is the normalized window RMS [0,1] per the plan contract:
+        // the silence threshold must not be reset by a single brief spike
+        // inside a ~250 ms window, and the per-platform RC thresholds exist
+        // precisely because iOS RMS runs lower than Android's peak-based
+        // AudioStats.audioAmplitude. Peak is still exposed via peakDbfs.
+        let event: [String: Any] = [
+            "amplitude": Double(windowRms),
+            "peakDbfs": 20 * log10(Double(max(windowPeak, 1e-6))),
+            "averageDbfs": 20 * log10(Double(max(windowRms, 1e-6))),
+            "audioState": "unknown",
+            // Monotonic clock (never wall-time) — the Dart side uses this for
+            // staleness detection across the stream.
+            "timestampMs": Int(ProcessInfo.processInfo.systemUptime * 1000)
+        ]
+        DispatchQueue.main.async {
+            handler.sendEvent(event)
+        }
+    }
+
+    /// Reads Linear PCM samples (16-bit int, 32-bit int, or 32-bit float —
+    /// the same formats the recording resampler accepts) and returns the
+    /// buffer's normalized peak plus RMS accumulators. Returns nil for
+    /// non-PCM or empty buffers.
+    static func computeAudioLevels(from sampleBuffer: CMSampleBuffer) -> (peak: Float, sumSquares: Double, sampleCount: Int)? {
+        guard let formatDescription = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDescription),
+              asbd.pointee.mFormatID == kAudioFormatLinearPCM else {
+            return nil
+        }
+
+        let sampleCount = CMSampleBufferGetNumSamples(sampleBuffer)
+        guard sampleCount > 0,
+              let inputFormat = AVAudioFormat(streamDescription: asbd),
+              let pcmBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(sampleCount)) else {
+            return nil
+        }
+        pcmBuffer.frameLength = AVAudioFrameCount(sampleCount)
+
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(
+            sampleBuffer,
+            at: 0,
+            frameCount: Int32(sampleCount),
+            into: pcmBuffer.mutableAudioBufferList
+        ) == noErr else {
+            return nil
+        }
+
+        let channelCount = Int(inputFormat.channelCount)
+        let frameLength = Int(pcmBuffer.frameLength)
+        // Interleaved layouts pack every channel's samples into channelData[0];
+        // deinterleaved layouts expose one pointer per channel.
+        let pointerCount = inputFormat.isInterleaved ? 1 : channelCount
+        let samplesPerPointer = inputFormat.isInterleaved ? frameLength * channelCount : frameLength
+        guard pointerCount > 0, samplesPerPointer > 0 else { return nil }
+
+        var peak: Float = 0
+        var sumSquares: Double = 0
+
+        if let floatData = pcmBuffer.floatChannelData {
+            for pointerIndex in 0..<pointerCount {
+                let samples = floatData[pointerIndex]
+                for sampleIndex in 0..<samplesPerPointer {
+                    let sample = samples[sampleIndex]
+                    peak = max(peak, abs(sample))
+                    sumSquares += Double(sample * sample)
+                }
+            }
+        } else if let int16Data = pcmBuffer.int16ChannelData {
+            for pointerIndex in 0..<pointerCount {
+                let samples = int16Data[pointerIndex]
+                for sampleIndex in 0..<samplesPerPointer {
+                    let sample = Float(samples[sampleIndex]) / 32768.0
+                    peak = max(peak, abs(sample))
+                    sumSquares += Double(sample * sample)
+                }
+            }
+        } else if let int32Data = pcmBuffer.int32ChannelData {
+            for pointerIndex in 0..<pointerCount {
+                let samples = int32Data[pointerIndex]
+                for sampleIndex in 0..<samplesPerPointer {
+                    let sample = Float(Double(samples[sampleIndex]) / 2147483648.0)
+                    peak = max(peak, abs(sample))
+                    sumSquares += Double(sample * sample)
+                }
+            }
+        } else {
+            return nil
+        }
+
+        return (peak, sumSquares, pointerCount * samplesPerPointer)
+    }
+}
+
 class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate {
     private static let switchStabilizationFrameCount = 3
     var latestPixelBuffer: CVPixelBuffer?
@@ -2286,6 +2519,43 @@ class RecordingStateStreamHandler: NSObject, FlutterStreamHandler {
     func onCancel(withArguments arguments: Any?) -> FlutterError? {
         self.eventSink = nil
         return nil
+    }
+}
+
+/// Stream handler for the per-camera audio-level EventChannel.
+///
+/// The sink is written from the platform thread (onListen/onCancel) and read
+/// from the audio delegate queue (hasListener) and main queue (sendEvent), so
+/// access is serialized with an internal lock.
+class AudioLevelStreamHandler: NSObject, FlutterStreamHandler {
+    private var lock = os_unfair_lock()
+    private var eventSink: FlutterEventSink?
+
+    var hasListener: Bool {
+        os_unfair_lock_lock(&lock)
+        defer { os_unfair_lock_unlock(&lock) }
+        return eventSink != nil
+    }
+
+    func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
+        os_unfair_lock_lock(&lock)
+        eventSink = events
+        os_unfair_lock_unlock(&lock)
+        return nil
+    }
+
+    func onCancel(withArguments arguments: Any?) -> FlutterError? {
+        os_unfair_lock_lock(&lock)
+        eventSink = nil
+        os_unfair_lock_unlock(&lock)
+        return nil
+    }
+
+    func sendEvent(_ event: [String: Any]) {
+        os_unfair_lock_lock(&lock)
+        let sink = eventSink
+        os_unfair_lock_unlock(&lock)
+        sink?(event)
     }
 }
 

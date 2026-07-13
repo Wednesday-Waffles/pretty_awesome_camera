@@ -12,16 +12,25 @@ class CameraConfig {
   /// Optional target video encoding bitrate, in bits per second.
   final int? videoBitrate;
 
+  /// Android only: request Bluetooth-mic routing (communication device /
+  /// legacy SCO) before each recording starts when a Bluetooth input is
+  /// present. Best-effort — routing failures fall back to the built-in mic
+  /// and never fail the recording. iOS ignores this flag (the audio session
+  /// already honors Bluetooth via `.allowBluetooth` system routing).
+  final bool preferBluetoothMic;
+
   const CameraConfig({
     this.resolutionPreset = ResolutionPreset.high,
     this.lensDirection,
     this.videoBitrate,
+    this.preferBluetoothMic = false,
   });
 
   CameraConfig copyWith({
     ResolutionPreset? resolutionPreset,
     LensDirection? lensDirection,
     int? videoBitrate,
+    bool? preferBluetoothMic,
     bool clearLensDirection = false,
     bool clearVideoBitrate = false,
   }) {
@@ -33,6 +42,7 @@ class CameraConfig {
       videoBitrate: clearVideoBitrate
           ? null
           : (videoBitrate ?? this.videoBitrate),
+      preferBluetoothMic: preferBluetoothMic ?? this.preferBluetoothMic,
     );
   }
 
@@ -41,6 +51,7 @@ class CameraConfig {
       'resolutionPreset': resolutionPreset.name,
       'lensDirection': lensDirection?.name,
       'videoBitrate': videoBitrate,
+      'preferBluetoothMic': preferBluetoothMic,
     };
   }
 }

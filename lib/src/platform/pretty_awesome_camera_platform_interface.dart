@@ -1,6 +1,7 @@
 import 'package:plugin_platform_interface/plugin_platform_interface.dart';
 
 import '../models/audio_device_changed_event.dart';
+import '../models/audio_level_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_initialization_result.dart';
@@ -65,7 +66,15 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
   }
 
   /// Starts recording video from the camera with the given ID.
-  Future<void> startRecording(int cameraId) {
+  ///
+  /// Resolves once the native recorder has confirmed engagement (on Android
+  /// the result is held until CameraX emits `VideoRecordEvent.Start`).
+  /// Returns a start-info map describing the audio route the recording began
+  /// on — keys include `audioPortType`, `audioDeviceName`,
+  /// `isBluetoothInput`, and on Android additionally `isBluetoothAvailable`,
+  /// `btRouteResult`, and `engagementElapsedMs`. May be null on older native
+  /// builds that predate start-info.
+  Future<Map<String, Object?>?> startRecording(int cameraId) {
     throw UnimplementedError('startRecording() has not been implemented.');
   }
 
@@ -122,6 +131,16 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError(
       'onAudioDeviceChanged() has not been implemented.',
     );
+  }
+
+  /// Returns a throttled stream of audio-level samples for the camera with
+  /// the given ID.
+  ///
+  /// iOS emits at ~4 Hz whenever the capture session runs; Android emits at
+  /// ~1 Hz only while a recording is active. See [AudioLevelEvent] for the
+  /// staleness caveat consumers must handle.
+  Stream<AudioLevelEvent> onAudioLevel(int cameraId) {
+    throw UnimplementedError('onAudioLevel() has not been implemented.');
   }
 
   /// Checks if the camera with the given ID can be switched MID-RECORDING.

@@ -4,5 +4,11 @@
   <!-- Camera permissions -->
   <uses-permission android:name="android.permission.CAMERA" />
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <!-- Required for Bluetooth-mic routing (setCommunicationDevice / legacy
+       startBluetoothSco). Install-time permission, no runtime prompt.
+       BLUETOOTH_CONNECT is deliberately NOT requested: device product names
+       are never surfaced (PII convention), and routing itself does not
+       require it — verify on the Phase 4 device spike. -->
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
 </manifest>
