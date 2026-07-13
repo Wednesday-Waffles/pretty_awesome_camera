@@ -722,9 +722,14 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             engageBluetoothRouting(cameraInstance, activity) { routeResult ->
                 // The held start may have been failed (dispose, detach, or
                 // timeout) while routing was in flight — never start a
-                // recording for a result that is already resolved.
+                // recording for a result that is already resolved. Release
+                // routing UNCONDITIONALLY here: the failing path's teardown
+                // already cleared btRouteEngaged, so a grant landing after it
+                // would otherwise early-return without clearing and could
+                // leave the process routed to the BT communication device.
                 if (cameraInstance.pendingStart !== pendingStart) {
-                    teardownBluetoothRouting(cameraInstance)
+                    cameraInstance.btRouteEngaged = false
+                    clearCommunicationRouting()
                     return@engageBluetoothRouting
                 }
                 cameraInstance.btRouteResult = routeResult
@@ -1040,6 +1045,19 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
         cameraInstance.btRouteEngaged = false
+        clearCommunicationRouting()
+    }
+
+    /**
+     * Unconditionally releases any communication-device/SCO request,
+     * regardless of btRouteEngaged bookkeeping. Used by the late-routing
+     * paths where an earlier teardown may have already cleared the flag
+     * while the platform's grant was still in flight — releasing again is
+     * idempotent, while skipping could leave the process routed to the
+     * Bluetooth communication device after the recording start was
+     * cancelled.
+     */
+    private fun clearCommunicationRouting() {
         val audioManager = audioManagerOrNull() ?: return
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
