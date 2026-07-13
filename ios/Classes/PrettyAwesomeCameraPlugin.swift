@@ -2307,10 +2307,13 @@ extension PrettyAwesomeCameraPlugin {
         cameraInstance.meteringSumSquares = 0
         cameraInstance.meteringSampleCount = 0
 
-        // amplitude is the normalized window peak [0,1] to match Android's
-        // AudioStats.audioAmplitude semantics; dBFS values are iOS extras.
+        // amplitude is the normalized window RMS [0,1] per the plan contract:
+        // the silence threshold must not be reset by a single brief spike
+        // inside a ~250 ms window, and the per-platform RC thresholds exist
+        // precisely because iOS RMS runs lower than Android's peak-based
+        // AudioStats.audioAmplitude. Peak is still exposed via peakDbfs.
         let event: [String: Any] = [
-            "amplitude": Double(windowPeak),
+            "amplitude": Double(windowRms),
             "peakDbfs": 20 * log10(Double(max(windowPeak, 1e-6))),
             "averageDbfs": 20 * log10(Double(max(windowRms, 1e-6))),
             "audioState": "unknown",

@@ -687,14 +687,52 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
         resetRecordingState(cameraInstance)
 
+        // PendingStart covers the ENTIRE start operation — including the
+        // asynchronous Bluetooth route engagement below — so a second start
+        // hits the START_IN_PROGRESS guard, and dispose/detach during the
+        // routing window can fail the held result instead of racing it. The
+        // timeout runnable identity-checks against the live holder (same
+        // discipline as PendingStop) so a superseded holder can never
+        // complete a later operation's result.
+        val requestedAtMs = SystemClock.uptimeMillis()
+        val timeoutRunnable = Runnable {
+            val pendingStart = cameraInstance.pendingStart ?: return@Runnable
+            if (pendingStart.result !== result) return@Runnable
+            cameraInstance.pendingStart = null
+            teardownBluetoothRouting(cameraInstance)
+            try {
+                cameraInstance.recording?.stop()
+            } catch (_: Exception) {
+            }
+            cameraInstance.recording = null
+            cameraInstance.recordingURL?.let { deleteQuietly(File(it)) }
+            cameraInstance.recordingURL = null
+            cameraInstance.isPaused = false
+            pendingStart.result.error(
+                "START_TIMEOUT",
+                "Timed out waiting for CameraX to confirm recording start",
+                recordingDiagnostics(cameraInstance, "start_confirm_timeout")
+            )
+        }
+        val pendingStart = PendingStart(result, timeoutRunnable, requestedAtMs)
+        cameraInstance.pendingStart = pendingStart
+        mainHandler.postDelayed(timeoutRunnable, START_CONFIRM_TIMEOUT_MS)
+
         if (cameraInstance.preferBluetoothMic) {
             engageBluetoothRouting(cameraInstance, activity) { routeResult ->
+                // The held start may have been failed (dispose, detach, or
+                // timeout) while routing was in flight — never start a
+                // recording for a result that is already resolved.
+                if (cameraInstance.pendingStart !== pendingStart) {
+                    teardownBluetoothRouting(cameraInstance)
+                    return@engageBluetoothRouting
+                }
                 cameraInstance.btRouteResult = routeResult
-                startRecordingInternal(cameraInstance, videoCapture, activity, result)
+                startRecordingInternal(cameraInstance, videoCapture, activity, pendingStart)
             }
         } else {
             cameraInstance.btRouteResult = "disabled"
-            startRecordingInternal(cameraInstance, videoCapture, activity, result)
+            startRecordingInternal(cameraInstance, videoCapture, activity, pendingStart)
         }
     }
 
@@ -703,7 +741,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         cameraInstance: CameraInstance,
         videoCapture: VideoCapture<Recorder>,
         activity: Activity,
-        result: Result
+        pendingStart: PendingStart
     ) {
         try {
             // UUID, not epoch millis: two recordings in the same clock tick
@@ -716,31 +754,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             val rotation = orientationListener?.getRotation() ?: Surface.ROTATION_0
             videoCapture.targetRotation = rotation
 
-            // Hold the MethodChannel result until VideoRecordEvent.Start so
-            // Dart gets positive confirmation the recorder engaged (previously
-            // start-failures only surfaced as delayed spontaneous finalizes).
-            val requestedAtMs = SystemClock.uptimeMillis()
-            val timeoutRunnable = Runnable {
-                val pendingStart = cameraInstance.pendingStart ?: return@Runnable
-                cameraInstance.pendingStart = null
-                teardownBluetoothRouting(cameraInstance)
-                try {
-                    cameraInstance.recording?.stop()
-                } catch (_: Exception) {
-                }
-                cameraInstance.recording = null
-                cameraInstance.recordingURL?.let { deleteQuietly(File(it)) }
-                cameraInstance.recordingURL = null
-                cameraInstance.isPaused = false
-                pendingStart.result.error(
-                    "START_TIMEOUT",
-                    "Timed out waiting for CameraX to confirm recording start",
-                    recordingDiagnostics(cameraInstance, "start_confirm_timeout")
-                )
-            }
-            cameraInstance.pendingStart = PendingStart(result, timeoutRunnable, requestedAtMs)
-            mainHandler.postDelayed(timeoutRunnable, START_CONFIRM_TIMEOUT_MS)
-
+            // The MethodChannel result stays held (in pendingStart) until
+            // VideoRecordEvent.Start so Dart gets positive confirmation the
+            // recorder engaged (previously start-failures only surfaced as
+            // delayed spontaneous finalizes).
             val recording = videoCapture.output
                 .prepareRecording(activity, outputOptions)
                 .withAudioEnabled()
@@ -758,12 +775,13 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
             cameraInstance.recording = recording
         } catch (e: Exception) {
-            val pendingStart = cameraInstance.pendingStart
-            cameraInstance.pendingStart = null
-            pendingStart?.let { mainHandler.removeCallbacks(it.timeoutRunnable) }
+            if (cameraInstance.pendingStart === pendingStart) {
+                cameraInstance.pendingStart = null
+            }
+            mainHandler.removeCallbacks(pendingStart.timeoutRunnable)
             teardownBluetoothRouting(cameraInstance)
             resetRecordingState(cameraInstance)
-            result.error(
+            pendingStart.result.error(
                 "RECORDING_ERROR",
                 e.message,
                 recordingDiagnostics(cameraInstance, "start_recording")
@@ -813,6 +831,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     }
 
     private fun handleStatus(cameraInstance: CameraInstance, event: VideoRecordEvent.Status) {
+        releaseBluetoothRoutingIfDeviceLost(cameraInstance)
         val handler = audioLevelStreamHandlers[cameraInstance.cameraId] ?: return
         val audioStats = event.recordingStats.audioStats
         handler.send(
@@ -992,9 +1011,29 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     }
 
     /**
+     * Mid-recording Bluetooth device loss: the platform falls back to the
+     * built-in mic on its own, but the communication-device/SCO request this
+     * plugin owns must be explicitly released (plan §2.3 item 5). Checked
+     * from the ~1 Hz Status events — only does work while a route is
+     * engaged.
+     */
+    private fun releaseBluetoothRoutingIfDeviceLost(cameraInstance: CameraInstance) {
+        if (!cameraInstance.btRouteEngaged) return
+        val audioManager = audioManagerOrNull() ?: return
+        val hasBluetoothInput = AudioDeviceIntrospection.isBluetoothDevice(
+            AudioDeviceIntrospection.preferredInputDevice(audioManager)
+        )
+        if (!hasBluetoothInput) {
+            teardownBluetoothRouting(cameraInstance)
+            cameraInstance.btRouteResult = "device_lost"
+        }
+    }
+
+    /**
      * Releases any communication-device/SCO request this plugin owns. Called
      * on every recording exit path (stop finalize, stop timeout, spontaneous
-     * finalize, dispose, start failure, engine/activity detach). Idempotent.
+     * finalize, dispose, start failure, engine/activity detach) and on
+     * mid-recording device loss. Idempotent.
      */
     private fun teardownBluetoothRouting(cameraInstance: CameraInstance) {
         if (!cameraInstance.btRouteEngaged) {
@@ -1308,6 +1347,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         } catch (e: Exception) {
             mainHandler.removeCallbacks(timeoutRunnable)
             cameraInstance.pendingStop = null
+            teardownBluetoothRouting(cameraInstance)
             cameraInstance.recording = null
             cameraInstance.recordingURL = null
             cameraInstance.isPaused = false

@@ -38,11 +38,19 @@ class CameraController extends ValueNotifier<CameraState> {
       _audioDeviceChangedController.stream;
 
   StreamSubscription<AudioLevelEvent>? _audioLevelSubscription;
-  final StreamController<AudioLevelEvent> _audioLevelController =
-      StreamController<AudioLevelEvent>.broadcast();
+  int? _audioLevelCameraId;
+  late final StreamController<AudioLevelEvent> _audioLevelController =
+      StreamController<AudioLevelEvent>.broadcast(
+        onListen: _connectAudioLevelStream,
+        onCancel: _disconnectAudioLevelStream,
+      );
 
   /// Throttled stream of audio-level samples. See [AudioLevelEvent] for
   /// per-platform cadence/coverage and the staleness caveat.
+  ///
+  /// The native EventChannel is only attached while this stream has
+  /// listeners — with none, the platforms skip metering work entirely, which
+  /// is what makes the app-side stream flag a true operational kill switch.
   Stream<AudioLevelEvent> get onAudioLevel => _audioLevelController.stream;
 
   Map<String, Object?>? _lastRecordingStartInfo;
@@ -512,6 +520,7 @@ class CameraController extends ValueNotifier<CameraState> {
     _audioDeviceSubscription = null;
     await _audioLevelSubscription?.cancel();
     _audioLevelSubscription = null;
+    _audioLevelCameraId = null;
 
     if (currentCameraId != null) {
       await _platform.disposeCamera(currentCameraId);
@@ -585,7 +594,10 @@ class CameraController extends ValueNotifier<CameraState> {
       final initializationResult = await _platform.initializeCamera(cameraId);
       await _subscribeToRecordingState(cameraId);
       await _subscribeToAudioDeviceChanged(cameraId);
-      await _subscribeToAudioLevel(cameraId);
+      _audioLevelCameraId = cameraId;
+      if (_audioLevelController.hasListener) {
+        _connectAudioLevelStream();
+      }
 
       _setValueSafely(
         _cameraSnapshot.copyWith(
@@ -682,8 +694,13 @@ class CameraController extends ValueNotifier<CameraState> {
         );
   }
 
-  Future<void> _subscribeToAudioLevel(int cameraId) async {
-    await _audioLevelSubscription?.cancel();
+  void _connectAudioLevelStream() {
+    final cameraId = _audioLevelCameraId;
+    if (cameraId == null ||
+        _audioLevelSubscription != null ||
+        _isControllerDisposed) {
+      return;
+    }
     _audioLevelSubscription = _platform
         .onAudioLevel(cameraId)
         .listen(
@@ -692,6 +709,14 @@ class CameraController extends ValueNotifier<CameraState> {
             debugPrint('pretty_awesome_camera audio level stream error: $error');
           },
         );
+  }
+
+  void _disconnectAudioLevelStream() {
+    final subscription = _audioLevelSubscription;
+    _audioLevelSubscription = null;
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
   }
 
   void _handleRecordingState(RecordingState state) {

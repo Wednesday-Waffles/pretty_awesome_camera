@@ -12,10 +12,12 @@
 /// during OS audio interruptions the stream stalls rather than reporting
 /// silence.
 class AudioLevelEvent {
-  /// Normalized peak amplitude in [0, 1].
+  /// Normalized amplitude in [0, 1].
   ///
-  /// Matches Android's `AudioStats.audioAmplitude` semantics; on iOS this is
-  /// the normalized window peak derived from PCM samples.
+  /// Android reports `AudioStats.audioAmplitude` (a peak measure); iOS
+  /// reports the normalized window RMS derived from PCM samples (deliberate
+  /// — a brief spike must not mask an otherwise-silent window). Consumers
+  /// must use per-platform silence thresholds.
   final double amplitude;
 
   /// Peak level in dBFS for the emission window. iOS only; null on Android.
