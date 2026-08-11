@@ -2,8 +2,10 @@ package com.example.pretty_awesome_camera
 
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import org.mockito.ArgumentCaptor
 import org.mockito.Mockito
 import kotlin.test.Test
+import kotlin.test.assertEquals
 
 /*
  * This demonstrates a simple unit test of the Kotlin portion of this plugin's implementation.
@@ -23,6 +25,19 @@ internal class PrettyAwesomeCameraPluginTest {
         plugin.onMethodCall(call, mockResult)
 
         Mockito.verify(mockResult).success("Android " + android.os.Build.VERSION.RELEASE)
+    }
+
+    @Test
+    fun onMethodCall_getBuildInfo_reportsCameraXWithNullEncoderStopGuard() {
+        val plugin = PrettyAwesomeCameraPlugin()
+        val mockResult: MethodChannel.Result = Mockito.mock(MethodChannel.Result::class.java)
+
+        plugin.onMethodCall(MethodCall("getBuildInfo", null), mockResult)
+
+        val buildInfoCaptor = ArgumentCaptor.forClass(Map::class.java)
+        Mockito.verify(mockResult).success(buildInfoCaptor.capture())
+        assertEquals("1.7.0-alpha02", buildInfoCaptor.value["cameraxVersion"])
+        assertEquals(true, buildInfoCaptor.value["persistentRecordingSwitch"])
     }
 
     @Test

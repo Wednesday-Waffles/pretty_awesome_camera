@@ -28,7 +28,10 @@ plugins {
     id("kotlin-android")
 }
 
-val cameraXVersion = "1.6.1"
+// 1.7.0-alpha02 includes the Recorder null-encoder stop guard from b/480772922.
+// Without it, stopping a persistent recording while VideoCapture is rebuilding
+// after a camera switch can NPE inside CameraX and lose the take (CU-86ajwvee8).
+val cameraXVersion = "1.7.0-alpha02"
 
 // Resolved at build time so the app can prove at runtime which plugin build it
 // is actually running (see the getBuildInfo method channel call).

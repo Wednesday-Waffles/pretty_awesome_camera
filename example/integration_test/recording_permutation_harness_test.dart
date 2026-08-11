@@ -36,7 +36,7 @@ void main() {
     for (final result in produced) {
       expect(result.error, isNull, reason: result.scenario.id);
       expect(result.metadataPath, isNotEmpty, reason: result.scenario.id);
-      if (result.expectsOutput) {
+      if (result.videoPath != null) {
         expect(result.videoPath, isNotEmpty, reason: result.scenario.id);
         expect(
           await File(result.videoPath!).exists(),
@@ -44,7 +44,10 @@ void main() {
           reason: result.videoPath,
         );
       } else {
-        expect(result.videoPath, isNull, reason: result.scenario.id);
+        // A rapid start/stop may be too short for CameraX to finalize, but a
+        // newer runtime may successfully return a valid clip. Every other
+        // scenario still requires an output path.
+        expect(result.expectsOutput, isFalse, reason: result.scenario.id);
       }
       expect(
         await File(result.metadataPath!).exists(),
