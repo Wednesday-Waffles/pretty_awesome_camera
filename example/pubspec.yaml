@@ -4,8 +4,13 @@ description: "Demonstrates how to use the pretty_awesome_camera plugin."
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 
+# Matches the plugin's own constraint (and therefore the consuming app's
+# pinned Flutter SDK). The example is the only way to build the native code —
+# `flutter build apk` here is what generates the Gradle wrapper the plugin
+# repo does not carry — so a constraint the app's toolchain cannot satisfy
+# makes the native build gate unrunnable.
 environment:
-  sdk: ^3.11.1
+  sdk: ">3.9.0"
 
 # Dependencies specify other packages that your package needs in order to work.
 # To automatically upgrade your package dependencies to the latest versions

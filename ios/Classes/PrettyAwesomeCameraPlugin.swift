@@ -71,6 +71,26 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         // processed audio sample and how many audio route switches occurred so we can
         // log the real audio-only gap size and converter re-prime cadence per switch.
         // Removing these has no effect on recording behavior.
+        // --- Interrupted-recording salvage -------------------------------
+        // Whether native may seal the in-flight segment by itself, and on what.
+        // Decided by Dart once per take and sent with the start call, so native
+        // never infers intent from `_isPaused` (which would race Dart's own
+        // lifecycle handling). Defaults to off: upgrading the plugin must not
+        // change recording behavior until a caller opts in.
+        fileprivate var _salvagePolicy: String = SalvagePolicy.off
+        // Ordered stash of seal *attempts*, drained by `consumeSealedSegments`.
+        // Failures are stashed too — without them a seal-success rate could
+        // never be measured, and a rollout would only sample takes that worked.
+        fileprivate var _sealedOutcomes: [[String: Any]] = []
+        // Set while a seal is finalizing, so a repeat trigger is a no-op rather
+        // than a second `finishWriting` on the same writer.
+        fileprivate var _sealInFlight: Bool = false
+        // First writer failure of the current segment. First one wins: later
+        // append failures are consequences, not causes.
+        fileprivate var _writerFailure: [String: Any]?
+        // Monotonic clock at segment start, for writer-failure elapsed time.
+        fileprivate var _segmentStartedAt: CFTimeInterval = 0
+
         fileprivate var _lastAcceptedAudioSampleTime: CMTime = .zero
         fileprivate var _audioRouteSwitchCount: Int = 0
         var activeFrameRateMin: CMTime?
@@ -279,6 +299,18 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             canSwitchCamera(call: call, result: result)
         case "switchCamera":
             switchCamera(call: call, result: result)
+        case "startRecordingSegment":
+            startRecordingSegment(call: call, result: result)
+        case "sealRecordingSegment":
+            sealRecordingSegmentMethod(call: call, result: result)
+        case "consumeSealedSegments":
+            consumeSealedSegments(call: call, result: result)
+        case "consumeWriterFailure":
+            consumeWriterFailure(call: call, result: result)
+        case "concatenateSegments":
+            concatenateSegments(call: call, result: result)
+        case "getRecordingCapabilities":
+            result(["supportsSegmentSeal": true, "supportsConcat": true])
         case "canSwitchCurrentCamera":
             canSwitchCurrentCamera(call: call, result: result)
         default:
@@ -543,6 +575,16 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 name: .AVCaptureSessionInterruptionEnded,
                 object: captureSession
             )
+
+            // Backgrounding had no handling at all before salvage. This fires
+            // only for cameras whose policy is the full `seal`; see
+            // `sealActiveRecordings`.
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(handleApplicationWillResignActive(_:)),
+                name: UIApplication.willResignActiveNotification,
+                object: nil
+            )
             
             sessionQueue.async { [weak self, weak cameraInstance] in
                 guard let self = self, let cameraInstance = cameraInstance else { return }
@@ -644,6 +686,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             
             NotificationCenter.default.removeObserver(self, name: AVAudioSession.routeChangeNotification, object: nil)
             NotificationCenter.default.removeObserver(self, name: AVAudioSession.interruptionNotification, object: nil)
+            NotificationCenter.default.removeObserver(self, name: UIApplication.willResignActiveNotification, object: nil)
         }
 
         result(nil)
@@ -831,6 +874,23 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         )
     }
 
+    /// Sends an event to **one** camera's handler.
+    ///
+    /// `sendAudioEvent` deliberately fans out to every camera's stream, which
+    /// is right for device-wide facts like a route change but wrong for a
+    /// per-recording fact: a seal on camera A must not move camera B's
+    /// controller out of its recording state. Salvage events use this instead.
+    private func sendAudioEvent(_ eventData: [String: Any], toCameraId cameraId: Int) {
+        os_unfair_lock_lock(&stateLock)
+        let streamHandler = audioStreamHandlers[cameraId]
+        os_unfair_lock_unlock(&stateLock)
+
+        guard let streamHandler = streamHandler else { return }
+        DispatchQueue.main.async {
+            streamHandler.sendEvent(eventData)
+        }
+    }
+
     private func sendAudioEvent(_ eventData: [String: Any]) {
         os_unfair_lock_lock(&stateLock)
         let handlers = Array(audioStreamHandlers.values)
@@ -939,6 +999,10 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             if affectedRecordingCount > 0 {
                 NSLog("%@", "PrettyAwesomeCameraPlugin: Audio session interruption began during recording. Emitted interruption event for Dart stop. affectedRecordings=\(affectedRecordingCount)")
                 sendAudioEvent(currentAudioRouteEvent(event: "audioInterruptionBegan"))
+                // Seal synchronously from this handler while the writer is
+                // still `.writing`. Waiting for Dart to round-trip a stop is
+                // exactly the window in which the writer dies.
+                sealActiveRecordings(for: SealReason.audioInterruption, requiresFullSealPolicy: false)
             }
         case .ended:
             let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
@@ -979,11 +1043,575 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         var eventData = currentAudioRouteEvent(event: "sessionInterrupted")
         eventData["interruptionReason"] = reasonValue
         sendAudioEvent(eventData)
+
+        // Reason matters. Backgrounding raises this very notification with
+        // `.videoDeviceNotAvailableInBackground`, so treating every reason as
+        // device contention would seal — and prompt — on every app switch,
+        // including under `seal_interrupt_only` where the caller owns
+        // backgrounding.
+        switch reasonValue {
+        case AVCaptureSession.InterruptionReason.audioDeviceInUseByAnotherClient.rawValue,
+             AVCaptureSession.InterruptionReason.videoDeviceInUseByAnotherClient.rawValue:
+            sealActiveRecordings(for: SealReason.sessionInterrupted, requiresFullSealPolicy: false)
+        case AVCaptureSession.InterruptionReason.videoDeviceNotAvailableInBackground.rawValue:
+            sealActiveRecordings(for: SealReason.backgrounded, requiresFullSealPolicy: true)
+        default:
+            break
+        }
     }
 
     @objc private func handleCaptureSessionInterruptionEnded(_ notification: Notification) {
         NSLog("%@", "PrettyAwesomeCameraPlugin: [SESSION-ERROR] AVCaptureSession interruption ended.")
         sendAudioEvent(currentAudioRouteEvent(event: "sessionInterruptionEnded"))
+    }
+
+    // MARK: - Interrupted-recording salvage
+
+    /// Wire values for the per-take salvage policy. Anything unrecognised
+    /// degrades to `off`: an unknown policy must never enable sealing.
+    fileprivate enum SalvagePolicy {
+        static let off = "off"
+        static let seal = "seal"
+        static let sealInterruptOnly = "seal_interrupt_only"
+
+        static func normalize(_ raw: Any?) -> String {
+            guard let value = raw as? String else { return off }
+            switch value {
+            case seal, sealInterruptOnly: return value
+            default: return off
+            }
+        }
+    }
+
+    /// Reason strings reported with a seal attempt.
+    fileprivate enum SealReason {
+        static let audioInterruption = "audio_interruption"
+        static let sessionInterrupted = "session_interrupted"
+        static let backgrounded = "backgrounded"
+        static let explicit = "explicit"
+    }
+
+    private func writerStatusName(_ status: AVAssetWriter.Status) -> String {
+        switch status {
+        case .unknown: return "unknown"
+        case .writing: return "writing"
+        case .completed: return "completed"
+        case .failed: return "failed"
+        case .cancelled: return "cancelled"
+        @unknown default: return "unrecognized"
+        }
+    }
+
+    private func sealOutcome(
+        ok: Bool,
+        path: String?,
+        durationMs: Int,
+        reason: String,
+        writerStatus: String,
+        sealLatencyMs: Int
+    ) -> [String: Any] {
+        var outcome: [String: Any] = [
+            "ok": ok,
+            "durationMs": durationMs,
+            "reason": reason,
+            "writerStatus": writerStatus,
+            "sealLatencyMs": sealLatencyMs
+        ]
+        if let path = path {
+            outcome["path"] = path
+        }
+        return outcome
+    }
+
+    /// Finalizes the in-flight segment while the writer is still healthy, and
+    /// leaves the capture session running so the preview never blinks.
+    ///
+    /// The ordering here is the whole point of the feature. Under
+    /// `recordingLock` we clear `_isRecording` *first*: every append path takes
+    /// the same lock and bails on that flag, so from that instant no further
+    /// buffer can reach the writer and it cannot be pushed into `.failed` while
+    /// we are finalizing it. Because the sample handlers hold the lock across
+    /// `append`, acquiring it here also waits out any append already in flight.
+    ///
+    /// `stopRecording` is deliberately not reused. It is the single most
+    /// safety-critical path in this file, it resolves a `FlutterResult` in
+    /// every branch, and it tears the writer down for good — a seal must
+    /// instead leave the instance ready for the next segment.
+    private func performSeal(
+        cameraInstance: CameraInstance,
+        reason: String,
+        completion: @escaping ([String: Any]) -> Void
+    ) {
+        let startedAt = CACurrentMediaTime()
+        func latencyMs() -> Int { Int((CACurrentMediaTime() - startedAt) * 1000) }
+
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+
+        if cameraInstance._sealInFlight {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            completion(sealOutcome(ok: false, path: nil, durationMs: 0, reason: reason,
+                                   writerStatus: "seal_in_flight", sealLatencyMs: latencyMs()))
+            return
+        }
+
+        guard cameraInstance._isRecording, let assetWriter = cameraInstance.assetWriter else {
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            // Not an error: sealing an absent or already-sealed writer is a
+            // no-op so that duplicate triggers stay harmless.
+            completion(sealOutcome(ok: false, path: nil, durationMs: 0, reason: reason,
+                                   writerStatus: "not_recording", sealLatencyMs: latencyMs()))
+            return
+        }
+
+        cameraInstance._sealInFlight = true
+        cameraInstance._isRecording = false
+        cameraInstance._isPaused = false
+
+        let videoInput = cameraInstance.videoWriterInput
+        let audioInput = cameraInstance.audioWriterInput
+        cameraInstance.videoWriterInput = nil
+        cameraInstance.audioWriterInput = nil
+
+        let recordingURL = cameraInstance.recordingURL
+        let status = assetWriter.status
+        let sessionStarted = cameraInstance._sessionStartTime != .zero
+        // Elapsed media time = last accepted PTS, minus the paused gaps we
+        // elided, minus the session origin.
+        let sessionStartTime = cameraInstance._sessionStartTime
+        let lastSampleTime = cameraInstance._lastSampleTime
+        let timeOffset = cameraInstance._timeOffset
+
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        cameraInstance.activeFrameRateMin = nil
+        cameraInstance.activeFrameRateMax = nil
+        cameraInstance.resetAudioConverter()
+
+        let statusName = writerStatusName(status)
+
+        let finishSeal: (Bool, String?, Int) -> Void = { ok, path, durationMs in
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            cameraInstance._sealInFlight = false
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            completion(self.sealOutcome(ok: ok, path: path, durationMs: durationMs,
+                                        reason: reason, writerStatus: statusName,
+                                        sealLatencyMs: latencyMs()))
+        }
+
+        guard status == .writing, sessionStarted, let url = recordingURL else {
+            // Either the writer never started a session (no frames yet) or it
+            // is already dead. Neither can produce a playable file — a writer
+            // that never called `finishWriting` has no `moov` atom — so clean
+            // up rather than hand back an unplayable path.
+            if status != .writing || !sessionStarted, let url = recordingURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            cameraInstance.assetWriter = nil
+            cameraInstance.recordingURL = nil
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Seal produced nothing. reason=\(reason) status=\(statusName) sessionStarted=\(sessionStarted)")
+            finishSeal(false, nil, 0)
+            return
+        }
+
+        let mediaDuration = CMTimeSubtract(CMTimeSubtract(lastSampleTime, timeOffset), sessionStartTime)
+        let durationMs = mediaDuration.isNumeric && mediaDuration.seconds > 0
+            ? Int(mediaDuration.seconds * 1000)
+            : 0
+
+        videoInput?.markAsFinished()
+        audioInput?.markAsFinished()
+
+        assetWriter.finishWriting {
+            let completed = assetWriter.status == .completed
+            cameraInstance.assetWriter = nil
+            cameraInstance.recordingURL = nil
+            if !completed {
+                try? FileManager.default.removeItem(at: url)
+                NSLog("%@", "PrettyAwesomeCameraPlugin: Seal finish failed. reason=\(reason) error=\(assetWriter.error?.localizedDescription ?? "unknown")")
+                finishSeal(false, nil, 0)
+                return
+            }
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Sealed segment. reason=\(reason) durationMs=\(durationMs) path=\(url.path)")
+            finishSeal(true, url.path, durationMs)
+        }
+    }
+
+    /// Runs a seal triggered by native itself (not by a Dart call), stashes the
+    /// outcome and notifies Dart.
+    ///
+    /// The notification is a bare name: `AudioDeviceChangedEvent.fromMap` keeps
+    /// only four keys and silently drops everything else, so a payload here
+    /// would arrive looking healthy with its contents gone. Dart fetches the
+    /// metadata with `consumeSealedSegments` instead — and by then the media is
+    /// already safe on disk, so the round trip races nothing.
+    private func performAutomaticSeal(cameraInstance: CameraInstance, reason: String) {
+        performSeal(cameraInstance: cameraInstance, reason: reason) { [weak self] outcome in
+            guard let self = self else { return }
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            cameraInstance._sealedOutcomes.append(outcome)
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+            // Success and failure get distinct names. The event model keeps
+            // only the name, and the listener has to pick its next state
+            // *before* it can drain the stash — so the one bit that decides
+            // "is there a segment?" has to travel in the name itself.
+            let sealed = (outcome["ok"] as? Bool) ?? false
+            let eventName = sealed ? "recordingSegmentSealed" : "recordingSegmentSealFailed"
+            self.sendAudioEvent(
+                self.currentAudioRouteEvent(event: eventName),
+                toCameraId: cameraInstance.cameraId
+            )
+        }
+    }
+
+    /// Seals every recording camera whose policy admits `reason`.
+    private func sealActiveRecordings(for reason: String, requiresFullSealPolicy: Bool) {
+        os_unfair_lock_lock(&stateLock)
+        let activeCameras = Array(cameras.values)
+        os_unfair_lock_unlock(&stateLock)
+
+        for cameraInstance in activeCameras {
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            let policy = cameraInstance._salvagePolicy
+            let isRecording = cameraInstance._isRecording
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+            guard isRecording else { continue }
+            guard policy != SalvagePolicy.off else { continue }
+            // Backgrounding is only ours to handle under the full `seal`
+            // policy. Under `seal_interrupt_only` the caller keeps its own
+            // pause-on-background behavior, and sealing here would replace a
+            // silent, working pause with a prompt on every app switch.
+            if requiresFullSealPolicy && policy != SalvagePolicy.seal { continue }
+
+            performAutomaticSeal(cameraInstance: cameraInstance, reason: reason)
+        }
+    }
+
+    private func sealRecordingSegmentMethod(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int else {
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        let reason = args["reason"] as? String ?? SealReason.explicit
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        performSeal(cameraInstance: cameraInstance, reason: reason) { outcome in
+            DispatchQueue.main.async {
+                result(outcome)
+            }
+        }
+    }
+
+    private func consumeSealedSegments(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int else {
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        // Drain atomically, so a duplicate notification yields an empty list
+        // rather than a duplicate segment.
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+        let outcomes = cameraInstance._sealedOutcomes
+        cameraInstance._sealedOutcomes = []
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        result(["outcomes": outcomes])
+    }
+
+    private func consumeWriterFailure(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int else {
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId] else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        os_unfair_lock_lock(&cameraInstance.recordingLock)
+        let failure = cameraInstance._writerFailure
+        cameraInstance._writerFailure = nil
+        os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+        result(failure)
+    }
+
+    /// Records the first writer failure of a segment and tears the dead writer
+    /// down. **Assumes `recordingLock` is already held.**
+    ///
+    /// This is a detected-loss path, never a salvage. By the time either
+    /// `startWriting` or an `append` reports failure the writer is already in
+    /// `.failed`, and a `.failed` writer can never be finalized — so the
+    /// in-flight file has no `moov` atom and is unplayable. All that is left is
+    /// to say so immediately instead of at the recording time limit, and to
+    /// leave the instance in a state a restart can use.
+    ///
+    /// Returns the file to delete and whether the caller should notify Dart;
+    /// both are done by the caller *after* releasing the lock.
+    private func markWriterFailedLocked(
+        _ cameraInstance: CameraInstance,
+        stage: String,
+        error: Error?
+    ) -> (shouldNotify: Bool, orphanURL: URL?, cameraId: Int) {
+        // First failure wins: later append failures are consequences of the
+        // first one, and overwriting would hide the actual cause.
+        guard cameraInstance._writerFailure == nil else {
+            return (false, nil, cameraInstance.cameraId)
+        }
+
+        let nsError = error as NSError?
+        let elapsedMs = cameraInstance._segmentStartedAt > 0
+            ? Int((CACurrentMediaTime() - cameraInstance._segmentStartedAt) * 1000)
+            : 0
+        cameraInstance._writerFailure = [
+            "stage": stage,
+            "errorDomain": nsError?.domain ?? "",
+            "errorCode": nsError?.code ?? 0,
+            "elapsedMs": elapsedMs
+        ]
+
+        cameraInstance._isRecording = false
+        cameraInstance._isPaused = false
+        cameraInstance.videoWriterInput = nil
+        cameraInstance.audioWriterInput = nil
+        let orphanURL = cameraInstance.recordingURL
+        cameraInstance.assetWriter = nil
+        cameraInstance.recordingURL = nil
+
+        NSLog("%@", "PrettyAwesomeCameraPlugin: Writer failed. stage=\(stage) elapsedMs=\(elapsedMs) error=\(error?.localizedDescription ?? "none")")
+        return (true, orphanURL, cameraInstance.cameraId)
+    }
+
+    /// Completes a writer-failure teardown started under the lock. Call after
+    /// releasing `recordingLock`.
+    private func finishWriterFailure(_ outcome: (shouldNotify: Bool, orphanURL: URL?, cameraId: Int)) {
+        guard outcome.shouldNotify else { return }
+        if let url = outcome.orphanURL {
+            // Unplayable by construction; nothing else will ever reclaim it.
+            try? FileManager.default.removeItem(at: url)
+        }
+        sendAudioEvent(currentAudioRouteEvent(event: "recordingWriterFailed"), toCameraId: outcome.cameraId)
+    }
+
+    @objc private func handleApplicationWillResignActive(_ notification: Notification) {
+        sealActiveRecordings(for: SealReason.backgrounded, requiresFullSealPolicy: true)
+    }
+
+    /// Concatenates finalized segments into a single file.
+    ///
+    /// `preferredTransform` is copied from the first segment onto the
+    /// composition track: without it a device-orientation difference between
+    /// segments silently rotates the output.
+    ///
+    /// Passthrough is preferred so a one-orientation session is a remux rather
+    /// than a re-encode; when passthrough reports the composition unexportable
+    /// we fall back to a real transcode instead of failing.
+    private func concatenateSegments(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let segmentPaths = args["segmentPaths"] as? [String],
+              let outputPath = args["outputPath"] as? String,
+              !segmentPaths.isEmpty else {
+            result(FlutterError(code: "INVALID_ARGUMENTS", message: "segmentPaths and outputPath are required", details: nil))
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let outputURL = URL(fileURLWithPath: outputPath)
+            try? FileManager.default.removeItem(at: outputURL)
+
+            let composition = AVMutableComposition()
+            guard let compositionVideoTrack = composition.addMutableTrack(
+                withMediaType: .video,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "CONCAT_ERROR", message: "Could not create a composition video track", details: nil))
+                }
+                return
+            }
+            let compositionAudioTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            )
+
+            var cursor = CMTime.zero
+            var preferredTransform: CGAffineTransform?
+
+            for path in segmentPaths {
+                let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+                let duration = asset.duration
+                guard duration.isNumeric, duration > .zero else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "CONCAT_ERROR",
+                            message: "Segment has no usable duration: \(path)",
+                            details: ["native_segment": path]
+                        ))
+                    }
+                    return
+                }
+                let range = CMTimeRange(start: .zero, duration: duration)
+
+                guard let sourceVideoTrack = asset.tracks(withMediaType: .video).first else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "CONCAT_ERROR",
+                            message: "Segment has no video track: \(path)",
+                            details: ["native_segment": path]
+                        ))
+                    }
+                    return
+                }
+
+                do {
+                    try compositionVideoTrack.insertTimeRange(range, of: sourceVideoTrack, at: cursor)
+                    if preferredTransform == nil {
+                        preferredTransform = sourceVideoTrack.preferredTransform
+                    }
+                    if let sourceAudioTrack = asset.tracks(withMediaType: .audio).first {
+                        // Audio is best-effort: a segment sealed while the mic
+                        // was seized can legitimately have none, and silent
+                        // video beats no video.
+                        try? compositionAudioTrack?.insertTimeRange(range, of: sourceAudioTrack, at: cursor)
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "CONCAT_ERROR",
+                            message: "Failed to insert segment: \(error.localizedDescription)",
+                            details: ["native_segment": path]
+                        ))
+                    }
+                    return
+                }
+
+                cursor = CMTimeAdd(cursor, duration)
+            }
+
+            compositionVideoTrack.preferredTransform = preferredTransform ?? .identity
+
+            self.exportComposition(
+                composition,
+                to: outputURL,
+                preset: AVAssetExportPresetPassthrough,
+                allowFallback: true,
+                result: result
+            )
+        }
+    }
+
+    private func exportComposition(
+        _ composition: AVMutableComposition,
+        to outputURL: URL,
+        preset: String,
+        allowFallback: Bool,
+        result: @escaping FlutterResult
+    ) {
+        AVAssetExportSession.determineCompatibility(
+            ofExportPreset: preset,
+            with: composition,
+            outputFileType: .mov
+        ) { compatible in
+            guard compatible else {
+                if allowFallback {
+                    self.exportComposition(
+                        composition,
+                        to: outputURL,
+                        preset: AVAssetExportPresetHighestQuality,
+                        allowFallback: false,
+                        result: result
+                    )
+                    return
+                }
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "CONCAT_ERROR",
+                        message: "No export preset can render this composition",
+                        details: ["native_preset": preset]
+                    ))
+                }
+                return
+            }
+
+            guard let exportSession = AVAssetExportSession(asset: composition, presetName: preset) else {
+                DispatchQueue.main.async {
+                    result(FlutterError(
+                        code: "CONCAT_ERROR",
+                        message: "Could not create an export session",
+                        details: ["native_preset": preset]
+                    ))
+                }
+                return
+            }
+
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .mov
+            exportSession.shouldOptimizeForNetworkUse = true
+
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                case .completed:
+                    let exported = AVURLAsset(url: outputURL)
+                    let durationMs = exported.duration.isNumeric
+                        ? Int(exported.duration.seconds * 1000)
+                        : 0
+                    NSLog("%@", "PrettyAwesomeCameraPlugin: Concatenated segments. preset=\(preset) durationMs=\(durationMs)")
+                    DispatchQueue.main.async {
+                        result(["path": outputURL.path, "durationMs": durationMs])
+                    }
+                default:
+                    let error = exportSession.error as NSError?
+                    try? FileManager.default.removeItem(at: outputURL)
+                    if allowFallback {
+                        // Passthrough can still fail at export time on formats
+                        // `determineCompatibility` accepted; a transcode is the
+                        // honest second attempt.
+                        self.exportComposition(
+                            composition,
+                            to: outputURL,
+                            preset: AVAssetExportPresetHighestQuality,
+                            allowFallback: false,
+                            result: result
+                        )
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        result(FlutterError(
+                            code: "CONCAT_ERROR",
+                            message: error?.localizedDescription ?? "Export failed",
+                            details: [
+                                "native_preset": preset,
+                                "native_error_domain": error?.domain ?? "",
+                                "native_error_code": error?.code ?? 0
+                            ]
+                        ))
+                    }
+                }
+            }
+        }
     }
 
     private func startRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -1002,6 +1630,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
         os_unfair_lock_unlock(&stateLock)
 
+        let salvagePolicy = SalvagePolicy.normalize((call.arguments as? [String: Any])?["salvagePolicy"])
+
         sessionQueue.async {
             // Native re-entrancy guard: a duplicate startRecording would build a
             // second AVAssetWriter and orphan the first. Checked on sessionQueue,
@@ -1013,7 +1643,89 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 return
             }
 
-            let audioSession = AVAudioSession.sharedInstance()
+            // A fresh take supersedes anything salvaged. The caller owns those
+            // files; clearing the stash here only drops our bookkeeping.
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            cameraInstance._sealedOutcomes = []
+            cameraInstance._writerFailure = nil
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+            self.beginSegment(cameraInstance: cameraInstance, salvagePolicy: salvagePolicy, result: result)
+        }
+    }
+
+    /// Starts a new segment inside an existing session, appending to whatever
+    /// has already been sealed.
+    ///
+    /// This is deliberately not `startRecording` minus its guard. After an
+    /// interruption `AVAudioSession` has been deactivated and `AVCaptureSession`
+    /// may have stopped; creating a writer without repairing both yields a
+    /// silent or empty segment — i.e. continuing would appear to work and
+    /// produce nothing. The repair mirrors `resumeRecording`'s slow path, which
+    /// exists for exactly this reason.
+    private func startRecordingSegment(call: FlutterMethodCall, result: @escaping FlutterResult) {
+        guard let args = call.arguments as? [String: Any],
+              let cameraId = args["cameraId"] as? Int else {
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+
+        os_unfair_lock_lock(&stateLock)
+        guard let cameraInstance = cameras[cameraId],
+              cameraInstance.captureSession != nil else {
+            os_unfair_lock_unlock(&stateLock)
+            result(FlutterError(code: "INVALID_CAMERA", message: "Camera not found or not initialized", details: nil))
+            return
+        }
+        os_unfair_lock_unlock(&stateLock)
+
+        let salvagePolicy = SalvagePolicy.normalize(args["salvagePolicy"])
+
+        sessionQueue.async {
+            if cameraInstance.isRecording {
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "ALREADY_RECORDING", message: "A recording is already in progress", details: nil))
+                }
+                return
+            }
+
+            do {
+                try self.activateAudioSessionForRecording()
+            } catch {
+                // Failing here leaves the sealed segments untouched, so the
+                // caller's other choices stay reachable.
+                DispatchQueue.main.async {
+                    result(FlutterError(code: "SEGMENT_START_ERROR", message: "Failed to reactivate audio session: \(error.localizedDescription)", details: nil))
+                }
+                return
+            }
+
+            if let captureSession = cameraInstance.captureSession, !captureSession.isRunning {
+                captureSession.startRunning()
+            }
+
+            // The seal stash survives; only the per-segment failure record is
+            // cleared, so a fresh segment starts with a clean diagnostic slate.
+            os_unfair_lock_lock(&cameraInstance.recordingLock)
+            cameraInstance._writerFailure = nil
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+            self.beginSegment(cameraInstance: cameraInstance, salvagePolicy: salvagePolicy, result: result)
+        }
+    }
+
+    /// Creates the writer for one segment and arms the per-segment state.
+    ///
+    /// Every field reset here is per-*segment*, not per-recording: each segment
+    /// starts a fresh `startSession(atSourceTime:)`, so leaving `_timeOffset`,
+    /// `_lastSampleTime` or `_sessionStartTime` behind would retime segment two
+    /// against segment one's origin.
+    private func beginSegment(
+        cameraInstance: CameraInstance,
+        salvagePolicy: String,
+        result: @escaping FlutterResult
+    ) {
+        let audioSession = AVAudioSession.sharedInstance()
             let currentRoute = audioSession.currentRoute
             let isBluetoothInput = currentRoute.inputs.contains { port in
                 Self.isBluetoothPort(port.portType)
@@ -1115,6 +1827,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
                 cameraInstance._lastAcceptedAudioSampleTime = .zero
                 cameraInstance._audioRouteSwitchCount = 0
+                cameraInstance._salvagePolicy = salvagePolicy
+                cameraInstance._segmentStartedAt = CACurrentMediaTime()
+                cameraInstance._sealInFlight = false
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
                 // Route stamp for the caller's start telemetry: which input the
@@ -1132,7 +1847,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     result(FlutterError(code: "WRITER_ERROR", message: error.localizedDescription, details: nil))
                 }
             }
-        }
     }
     
     private func pauseRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -1675,7 +2389,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             if assetWriter.status == .unknown {
                 assetWriter.startWriting()
                 if assetWriter.status == .failed {
-                    NSLog("%@", "Asset writer failed to start: \(assetWriter.error?.localizedDescription ?? "unknown error")")
+                    // Previously this only logged and then fell through to
+                    // `startSession`, marking the first frame consumed — so a
+                    // writer dead at second three looked healthy until the
+                    // recording limit. Report it now and stop pretending.
+                    let failure = markWriterFailedLocked(cameraInstance, stage: "start_writing", error: assetWriter.error)
+                    os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                    finishWriterFailure(failure)
+                    return
                 }
                 assetWriter.startSession(atSourceTime: currentTime)
                 cameraInstance._sessionStartTime = currentTime
@@ -1721,11 +2442,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
         if let adjustedBuffer = adjustedBuffer {
             if !videoInput.append(adjustedBuffer) {
-                if let error = cameraInstance.assetWriter?.error {
-                    NSLog("%@", "PrettyAwesomeCameraPlugin: Video append failed. Error: \(error.localizedDescription)")
-                } else {
-                    NSLog("%@", "PrettyAwesomeCameraPlugin: Video append failed without asset writer error.")
-                }
+                // An append only fails once the writer is already `.failed`,
+                // and a failed writer can never be finalized — so this is a
+                // detected loss, not something a seal could rescue. Surfacing
+                // it immediately is the whole value.
+                let failure = markWriterFailedLocked(cameraInstance, stage: "append_video", error: cameraInstance.assetWriter?.error ?? assetWriter.error)
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                finishWriterFailure(failure)
+                return
             }
         }
         os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -1961,9 +2685,13 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 cameraInstance: cameraInstance
             ) {
                 if !audioInput.append(resampled) {
-                    if let error = cameraInstance.assetWriter?.error {
-                        NSLog("%@", "PrettyAwesomeCameraPlugin: Resampled audio append failed. Error: \(error.localizedDescription)")
-                    }
+                    // A false return means the writer is already `.failed`;
+                    // note that it can return false with no writer error at
+                    // all, which is why the old log could stay silent.
+                    let failure = markWriterFailedLocked(cameraInstance, stage: "append_audio", error: cameraInstance.assetWriter?.error)
+                    os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                    finishWriterFailure(failure)
+                    return
                 }
             } else {
                 // Resampling failed — drop this sample, reset converter, and log warning without flagging a recording-wide discontinuity
@@ -2067,9 +2795,10 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
 
         if let adjustedBuffer = adjustedBuffer {
             if !audioInput.append(adjustedBuffer) {
-                if let error = cameraInstance.assetWriter?.error {
-                    NSLog("%@", "PrettyAwesomeCameraPlugin: Direct audio append failed. Error: \(error.localizedDescription)")
-                }
+                let failure = markWriterFailedLocked(cameraInstance, stage: "append_audio", error: cameraInstance.assetWriter?.error)
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                finishWriterFailure(failure)
+                return
             }
         }
         os_unfair_lock_unlock(&cameraInstance.recordingLock)

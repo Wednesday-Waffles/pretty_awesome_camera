@@ -295,13 +295,20 @@ class CameraController extends ValueNotifier<CameraState> {
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
       return startInfo;
     } on CameraException catch (error) {
-      // Restore the state we came from, error attached. When that was
-      // `CameraSegmentSealedState` its segment count survives `copyWith`, so a
-      // failed attempt leaves the remaining choices live rather than looking
-      // like a session with nothing to salvage.
-      _setValueSafely(
-        previous.copyWith(state: _stateWithError(previous.state, error)),
-      );
+      final previousState = previous.state;
+      if (previousState is CameraSegmentSealedState) {
+        // Restore the sealed state *without* the error. Attaching it would be
+        // actively harmful here: `CameraBuilderState.fromController` turns any
+        // error-carrying state into `CameraBuilderErrorState`, whose only
+        // action is `reconfigure` — so a failed attempt to continue would
+        // replace the caller's three live choices with a dead end. The
+        // exception still propagates, which is how the caller learns.
+        _setValueSafely(previous);
+      } else {
+        _setValueSafely(
+          previous.copyWith(state: _stateWithError(previousState, error)),
+        );
+      }
       rethrow;
     }
   }
@@ -840,8 +847,13 @@ class CameraController extends ValueNotifier<CameraState> {
     switch (event.event) {
       case recordingSegmentSealedEvent:
         _applySegmentSealed();
+      case recordingSegmentSealFailedEvent:
       case recordingWriterFailedEvent:
-        _applyWriterFailed();
+        // Both mean "the recording is over and nothing new was salvaged".
+        // Native has already torn the writer down, so the only question left
+        // is which state can legally restart — and that depends on whether
+        // anything survives from earlier in the session.
+        _applyRecordingLost();
     }
     _audioDeviceChangedController.add(event);
   }
@@ -868,12 +880,18 @@ class CameraController extends ValueNotifier<CameraState> {
     );
   }
 
+  /// Handles "the recording ended without producing a new segment" — writer
+  /// death, or a seal attempt that found nothing to finalize.
+  ///
   /// Writer death is a *detected loss*, never a salvage: by the time it is
   /// observable the writer has already failed, and a failed writer can never
   /// be finalized. Native has torn the dead writer down and preserved any
   /// earlier stash; all the controller must do is stop claiming to record, and
   /// land in a state from which restarting is legal.
-  void _applyWriterFailed() {
+  ///
+  /// [_sealedSegmentCount] counts only *successful* seals, so it answers
+  /// exactly the question the payload-free notification cannot.
+  void _applyRecordingLost() {
     if (_isControllerDisposed || _cameraSnapshot.description == null) {
       return;
     }
@@ -924,6 +942,10 @@ class CameraController extends ValueNotifier<CameraState> {
             _cameraSnapshot.state is! CameraDisposedState &&
             _cameraSnapshot.state is! CameraReadyState &&
             _cameraSnapshot.state is! CameraVideoRecordedState &&
+            // Both platforms emit one `idle` when this stream is subscribed.
+            // Resetting a sealed session to ready would silently discard the
+            // salvage the caller is still deciding about.
+            _cameraSnapshot.state is! CameraSegmentSealedState &&
             _cameraSnapshot.state is! CameraStoppingRecordingState) {
           _setValueSafely(_cameraSnapshot.copyWith(state: _cameraReadyState()));
         }

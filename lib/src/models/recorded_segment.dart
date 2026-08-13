@@ -17,6 +17,15 @@ library;
 /// [CameraController.consumeSealedSegments] to fetch the metadata.
 const String recordingSegmentSealedEvent = 'recordingSegmentSealed';
 
+/// Notification name emitted when a seal attempt produced nothing playable.
+///
+/// Success and failure need distinct names, not a payload field. The listener
+/// has to choose its next state *before* it can drain the stash, and the event
+/// model keeps only the name — so the one bit that decides "is there a
+/// segment?" has to travel in the name itself. The attempt is still stashed,
+/// so a failed seal remains visible to telemetry.
+const String recordingSegmentSealFailedEvent = 'recordingSegmentSealFailed';
+
 /// Notification name emitted when the native writer has died mid-recording.
 ///
 /// Also a bare name; call [CameraController.consumeWriterFailure] for the
