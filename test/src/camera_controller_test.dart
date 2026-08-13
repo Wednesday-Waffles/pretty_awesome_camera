@@ -127,7 +127,86 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<String?> getPlatformVersion() async => 'test';
+
+  // --- salvage ---
+  CameraException? startSegmentError;
+  final List<SalvagePolicy> startSegmentCalls = <SalvagePolicy>[];
+  List<SegmentSealOutcome> drainedOutcomes = const <SegmentSealOutcome>[];
+  int consumeSealedSegmentsCallCount = 0;
+  RecordingCapabilities capabilities = const RecordingCapabilities(
+    supportsSegmentSeal: true,
+    supportsConcat: true,
+  );
+
+  @override
+  Future<Map<String, Object?>?> startRecordingSegment(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) async {
+    startSegmentCalls.add(salvagePolicy);
+    final error = startSegmentError;
+    if (error != null) {
+      throw error;
+    }
+    return startInfo;
+  }
+
+  @override
+  Future<SegmentSealOutcome> sealRecordingSegment(
+    int cameraId, {
+    required String reason,
+  }) async {
+    return SegmentSealOutcome(
+      ok: true,
+      reason: reason,
+      writerStatus: 'writing',
+      sealLatency: const Duration(milliseconds: 12),
+      segment: RecordedSegment(
+        path: '/tmp/segment.mov',
+        duration: const Duration(seconds: 5),
+        reason: reason,
+      ),
+    );
+  }
+
+  @override
+  Future<List<SegmentSealOutcome>> consumeSealedSegments(int cameraId) async {
+    consumeSealedSegmentsCallCount++;
+    final outcomes = drainedOutcomes;
+    drainedOutcomes = const <SegmentSealOutcome>[];
+    return outcomes;
+  }
+
+  @override
+  Future<WriterFailureReport?> consumeWriterFailure(int cameraId) async => null;
+
+  @override
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) async {
+    return SegmentConcatResult(
+      path: outputPath,
+      duration: const Duration(seconds: 10),
+    );
+  }
+
+  @override
+  Future<RecordingCapabilities> getRecordingCapabilities() async =>
+      capabilities;
 }
+
+/// Builds the name-only notification native emits for salvage events.
+///
+/// Deliberately constructed the way the real event model does — with only the
+/// four keys it preserves — so a test cannot accidentally rely on a payload
+/// that would be dropped in production.
+AudioDeviceChangedEvent _salvageEvent(String name) => AudioDeviceChangedEvent(
+  event: name,
+  deviceName: 'iPhone Microphone',
+  portType: 'MicrophoneBuiltIn',
+  isBluetooth: false,
+);
 
 void main() {
   late FakeCameraPlatform platform;
@@ -493,6 +572,226 @@ void main() {
         description: description,
       ).isSwitchingCamera,
       isTrue,
+    );
+  });
+
+  group('segment salvage', () {
+    Future<CameraController> recordingController({
+      SalvagePolicy policy = SalvagePolicy.seal,
+    }) async {
+      final controller = CameraController(
+        description: description,
+        platform: platform,
+      );
+      addTearDown(controller.dispose);
+      await controller.prewarmUp();
+      await controller.startRecording(salvagePolicy: policy);
+      return controller;
+    }
+
+    /// Delivers a native notification and lets the stream drain.
+    Future<void> emit(String name) async {
+      platform.audioDeviceChangedController.add(_salvageEvent(name));
+      await Future<void>.delayed(Duration.zero);
+    }
+
+    test('the salvage policy reaches the platform on start', () async {
+      final controller = CameraController(
+        description: description,
+        platform: platform,
+      );
+      addTearDown(controller.dispose);
+      await controller.prewarmUp();
+
+      await controller.startRecording(
+        salvagePolicy: SalvagePolicy.sealInterruptOnly,
+      );
+
+      expect(platform.startRecordingCalls, [SalvagePolicy.sealInterruptOnly]);
+    });
+
+    test('the policy defaults to off, so an upgrade changes nothing', () async {
+      final controller = CameraController(
+        description: description,
+        platform: platform,
+      );
+      addTearDown(controller.dispose);
+      await controller.prewarmUp();
+
+      await controller.startRecording();
+
+      expect(platform.startRecordingCalls, [SalvagePolicy.off]);
+    });
+
+    test('no listener ever observes the seal while the controller still '
+        'claims to be recording', () async {
+      final controller = await recordingController();
+      expect(controller.value, isA<CameraRecordingState>());
+
+      // A listener that reacted to the seal while the controller still said
+      // "recording" would have every restart rejected by the startRecording
+      // guard.
+      //
+      // Honest caveat, established by mutation-testing this test: swapping the
+      // two lines in `_handleAudioDeviceEvent` does NOT make it fail. The
+      // ordering is guaranteed structurally rather than by discipline —
+      // ValueNotifier notifies synchronously from inside the transition, and a
+      // broadcast stream delivers in a later microtask, so both listener kinds
+      // see the new state either way. This test pins the observable contract;
+      // it is not a regression guard for statement order.
+      final notifierObserved = <String>[];
+      void onNotify() => notifierObserved.add(controller.value.name);
+      controller.addListener(onNotify);
+      addTearDown(() => controller.removeListener(onNotify));
+
+      final streamObserved = <String>[];
+      controller.onAudioDeviceChanged.listen((event) {
+        streamObserved.add('${event.event}:${controller.value.name}');
+      });
+
+      await emit(recordingSegmentSealedEvent);
+
+      expect(notifierObserved, ['segmentSealed']);
+      expect(streamObserved, ['recordingSegmentSealed:segmentSealed']);
+      expect(controller.value, isA<CameraSegmentSealedState>());
+      expect(controller.sealedSegmentCount, 1);
+    });
+
+    test('a failed seal does not claim a segment exists', () async {
+      final controller = await recordingController();
+
+      await emit(recordingSegmentSealFailedEvent);
+
+      // The recording is over either way, so restarting must be legal — but
+      // nothing was salvaged, so the count must not move.
+      expect(controller.value, isA<CameraReadyState>());
+      expect(controller.sealedSegmentCount, 0);
+    });
+
+    test('writer failure with prior segments keeps them reachable', () async {
+      final controller = await recordingController();
+      await emit(recordingSegmentSealedEvent);
+      await controller.startRecordingSegment(salvagePolicy: SalvagePolicy.seal);
+      expect(controller.value, isA<CameraRecordingState>());
+
+      await emit(recordingWriterFailedEvent);
+
+      expect(controller.value, isA<CameraSegmentSealedState>());
+      expect(controller.sealedSegmentCount, 1);
+    });
+
+    test('writer failure with nothing salvaged lands on ready', () async {
+      final controller = await recordingController();
+
+      await emit(recordingWriterFailedEvent);
+
+      expect(controller.value, isA<CameraReadyState>());
+      expect(controller.sealedSegmentCount, 0);
+    });
+
+    test('both restart choices are legal from a sealed state', () async {
+      final controller = await recordingController();
+      await emit(recordingSegmentSealedEvent);
+
+      // Continue appends.
+      await controller.startRecordingSegment(salvagePolicy: SalvagePolicy.seal);
+      expect(controller.value, isA<CameraRecordingState>());
+      expect(controller.sealedSegmentCount, 1);
+
+      await emit(recordingSegmentSealedEvent);
+      expect(controller.sealedSegmentCount, 2);
+
+      // Start Over supersedes.
+      await controller.startRecording(salvagePolicy: SalvagePolicy.seal);
+      expect(controller.value, isA<CameraRecordingState>());
+      expect(controller.sealedSegmentCount, 0);
+    });
+
+    test('a failed continue leaves the other choices live', () async {
+      final controller = await recordingController();
+      await emit(recordingSegmentSealedEvent);
+
+      platform.startSegmentError = CameraException(
+        code: 'SEGMENT_START_ERROR',
+        message: 'audio session still seized',
+      );
+
+      await expectLater(
+        controller.startRecordingSegment(salvagePolicy: SalvagePolicy.seal),
+        throwsA(isA<CameraException>()),
+      );
+
+      // Crucially the state carries no error. `CameraBuilderState` turns any
+      // error-carrying state into an error state whose only action is
+      // reconfigure, which would replace three live choices with a dead end.
+      final state = controller.value;
+      expect(state, isA<CameraSegmentSealedState>());
+      expect(state.error, isNull);
+      expect((state as CameraSegmentSealedState).sealedSegmentCount, 1);
+
+      final builderState = CameraBuilderState.fromController(controller, state);
+      expect(builderState, isA<CameraBuilderSegmentSealedState>());
+    });
+
+    test(
+      'an idle recording-state event does not wipe a sealed session',
+      () async {
+        final controller = await recordingController();
+        await emit(recordingSegmentSealedEvent);
+
+        // Both platforms emit exactly one `idle` when this stream is subscribed.
+        platform.recordingStateController.add(RecordingState.idle);
+        await Future<void>.delayed(Duration.zero);
+
+        expect(controller.value, isA<CameraSegmentSealedState>());
+      },
+    );
+
+    test(
+      'draining is destructive, so a repeat notification yields nothing',
+      () async {
+        final controller = await recordingController();
+        platform.drainedOutcomes = <SegmentSealOutcome>[
+          SegmentSealOutcome(
+            ok: true,
+            reason: SegmentSealReasons.audioInterruption,
+            writerStatus: 'writing',
+            sealLatency: const Duration(milliseconds: 8),
+            segment: RecordedSegment(
+              path: '/tmp/a.mov',
+              duration: const Duration(seconds: 3),
+              reason: SegmentSealReasons.audioInterruption,
+            ),
+          ),
+        ];
+
+        expect((await controller.consumeSealedSegments()).length, 1);
+        expect(await controller.consumeSealedSegments(), isEmpty);
+        expect(platform.consumeSealedSegmentsCallCount, 2);
+      },
+    );
+
+    test(
+      'a seal-capable but concat-incapable build is not salvage-capable',
+      () async {
+        final controller = CameraController(
+          description: description,
+          platform: platform,
+        );
+        addTearDown(controller.dispose);
+        await controller.prewarmUp();
+
+        platform.capabilities = const RecordingCapabilities(
+          supportsSegmentSeal: true,
+          supportsConcat: false,
+        );
+
+        final capabilities = await controller.getRecordingCapabilities();
+
+        // Offering to continue a recording that can never be reassembled is
+        // worse than offering nothing.
+        expect(capabilities.supportsSalvage, isFalse);
+      },
     );
   });
 }
