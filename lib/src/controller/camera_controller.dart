@@ -9,6 +9,7 @@ import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
 import '../models/camera_preview_size.dart';
 import '../models/camera_state.dart';
+import '../models/recorded_segment.dart';
 import '../models/recording_state.dart';
 import '../platform/pretty_awesome_camera_platform_interface.dart';
 import 'camera_snapshot.dart';
@@ -27,7 +28,22 @@ class CameraController extends ValueNotifier<CameraState> {
   bool _isControllerDisposed = false;
   Future<void>? _initializationFuture;
   Future<String?>? _stopRecordingFuture;
+  Future<SegmentSealOutcome>? _sealSegmentFuture;
   Future<void>? _switchCameraFuture;
+
+  /// Segments sealed so far in the current session.
+  ///
+  /// Reset by a fresh start (including Start Over) and by a completed stop,
+  /// but deliberately **not** by [startRecordingSegment] — continuing a
+  /// session appends to what was salvaged rather than replacing it.
+  ///
+  /// This is also what lets writer-failure handling pick the right recovery
+  /// state without a payload: the failure notification carries no data, so the
+  /// controller has to know locally whether anything survives.
+  int _sealedSegmentCount = 0;
+
+  /// How many segments have been sealed in the current session.
+  int get sealedSegmentCount => _sealedSegmentCount;
   StreamSubscription<AudioDeviceChangedEvent>? _audioDeviceSubscription;
   final StreamController<AudioDeviceChangedEvent>
   _audioDeviceChangedController =
@@ -219,30 +235,144 @@ class CameraController extends ValueNotifier<CameraState> {
   /// Starts recording and returns the platform's start-info map (audio route
   /// stamp; null when unavailable). The result resolves only after the
   /// native recorder confirms engagement.
-  Future<Map<String, Object?>?> startRecording() async {
+  Future<Map<String, Object?>?> startRecording({
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) async {
     _assertInitialized('startRecording');
     _assertState(
       allows: (state) =>
-          state is CameraReadyState || state is CameraVideoRecordedState,
+          state is CameraReadyState ||
+          state is CameraVideoRecordedState ||
+          // A native seal leaves the session alive but not recording. Both
+          // restart choices — append and start-fresh — arrive here, so
+          // rejecting this state would strand every salvaged take.
+          state is CameraSegmentSealedState,
       method: 'startRecording',
     );
 
+    // A fresh take supersedes anything salvaged; the caller owns those files
+    // and is responsible for deleting them.
+    _sealedSegmentCount = 0;
+    return _startRecordingInternal(
+      () => _platform.startRecording(cameraId!, salvagePolicy: salvagePolicy),
+    );
+  }
+
+  /// Starts a new segment that appends to the segments already sealed in this
+  /// session.
+  ///
+  /// Unlike [startRecording] this preserves [sealedSegmentCount], so a failure
+  /// here leaves the salvaged segments — and therefore the other two choices —
+  /// reachable.
+  Future<Map<String, Object?>?> startRecordingSegment({
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) async {
+    _assertInitialized('startRecordingSegment');
+    _assertState(
+      allows: (state) => state is CameraSegmentSealedState,
+      method: 'startRecordingSegment',
+    );
+
+    return _startRecordingInternal(
+      () => _platform.startRecordingSegment(
+        cameraId!,
+        salvagePolicy: salvagePolicy,
+      ),
+    );
+  }
+
+  Future<Map<String, Object?>?> _startRecordingInternal(
+    Future<Map<String, Object?>?> Function() start,
+  ) async {
     final previous = _cameraSnapshot;
     _setValueSafely(
       _cameraSnapshot.copyWith(state: _cameraStartingRecordingState()),
     );
 
     try {
-      final startInfo = await _platform.startRecording(cameraId!);
+      final startInfo = await start();
       _lastRecordingStartInfo = startInfo;
       _setValueSafely(_cameraSnapshot.copyWith(state: _cameraRecordingState()));
       return startInfo;
     } on CameraException catch (error) {
+      // Restore the state we came from, error attached. When that was
+      // `CameraSegmentSealedState` its segment count survives `copyWith`, so a
+      // failed attempt leaves the remaining choices live rather than looking
+      // like a session with nothing to salvage.
       _setValueSafely(
         previous.copyWith(state: _stateWithError(previous.state, error)),
       );
       rethrow;
     }
+  }
+
+  /// Finalizes the in-flight segment, leaving the camera session running.
+  ///
+  /// Concurrent calls share one in-flight future, mirroring [stopRecording]'s
+  /// de-duplication: a seal triggered natively and a seal requested from Dart
+  /// must not both finalize the same writer.
+  Future<SegmentSealOutcome> sealRecordingSegment({
+    required String reason,
+  }) async {
+    _assertInitialized('sealRecordingSegment');
+
+    final inFlight = _sealSegmentFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = _sealRecordingSegmentInternal(reason: reason);
+    _sealSegmentFuture = future;
+    return future.whenComplete(() {
+      if (identical(_sealSegmentFuture, future)) {
+        _sealSegmentFuture = null;
+      }
+    });
+  }
+
+  Future<SegmentSealOutcome> _sealRecordingSegmentInternal({
+    required String reason,
+  }) async {
+    final outcome = await _platform.sealRecordingSegment(
+      cameraId!,
+      reason: reason,
+    );
+    if (outcome.ok) {
+      _applySegmentSealed();
+    }
+    return outcome;
+  }
+
+  /// Drains the native stash of seal outcomes. Draining is destructive.
+  Future<List<SegmentSealOutcome>> consumeSealedSegments() {
+    _assertInitialized('consumeSealedSegments');
+    return _platform.consumeSealedSegments(cameraId!);
+  }
+
+  /// Drains the writer-failure diagnostic stash, or null when there is none.
+  Future<WriterFailureReport?> consumeWriterFailure() {
+    _assertInitialized('consumeWriterFailure');
+    return _platform.consumeWriterFailure(cameraId!);
+  }
+
+  /// Concatenates [segmentPaths] in order into [outputPath].
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) {
+    _assertNotDisposed('concatenateSegments');
+    return _platform.concatenateSegments(
+      segmentPaths: segmentPaths,
+      outputPath: outputPath,
+    );
+  }
+
+  /// Reports what the underlying native build can do. Never throws for a
+  /// native build that predates salvage — it reports
+  /// [RecordingCapabilities.none].
+  Future<RecordingCapabilities> getRecordingCapabilities() {
+    _assertNotDisposed('getRecordingCapabilities');
+    return _platform.getRecordingCapabilities();
   }
 
   Future<Map<String, Object?>> getRecordingSettings() {
@@ -488,6 +618,9 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<String?> _stopRecordingInternal(CameraSnapshot previous) async {
     try {
       final filePath = await _platform.stopRecording(cameraId!);
+      // The session is over either way; segment bookkeeping does not carry
+      // across takes.
+      _sealedSegmentCount = 0;
       if (filePath != null) {
         _setValueSafely(
           _cameraSnapshot.copyWith(
@@ -574,6 +707,7 @@ class CameraController extends ValueNotifier<CameraState> {
 
   void clearRecordedFile() {
     _assertNotDisposed('clearRecordedFile');
+    _sealedSegmentCount = 0;
     _setValueSafely(_cameraSnapshot.copyWith(state: _cameraReadyState()));
   }
 
@@ -685,13 +819,75 @@ class CameraController extends ValueNotifier<CameraState> {
     _audioDeviceSubscription = _platform
         .onAudioDeviceChanged(cameraId)
         .listen(
-          _audioDeviceChangedController.add,
+          _handleAudioDeviceEvent,
           onError: (Object error, StackTrace stackTrace) {
             debugPrint(
               'pretty_awesome_camera audio device stream error: $error',
             );
           },
         );
+  }
+
+  /// Applies salvage state transitions **before** forwarding the event.
+  ///
+  /// Ordering is load-bearing. A native seal happens outside any controller
+  /// method, so without this the controller would still claim to be recording
+  /// while listeners react to the seal — and every restart would then be
+  /// rejected by the `startRecording` guard. Because [_setValueSafely]
+  /// notifies synchronously, no listener can observe the notification while
+  /// the controller is stale.
+  void _handleAudioDeviceEvent(AudioDeviceChangedEvent event) {
+    switch (event.event) {
+      case recordingSegmentSealedEvent:
+        _applySegmentSealed();
+      case recordingWriterFailedEvent:
+        _applyWriterFailed();
+    }
+    _audioDeviceChangedController.add(event);
+  }
+
+  void _applySegmentSealed() {
+    if (_isControllerDisposed || _cameraSnapshot.description == null) {
+      return;
+    }
+    // A seal ends the in-flight recording. Any state that was mid-recording
+    // moves to sealed; anything else (already sealed, ready, disposed) is left
+    // alone so a duplicate notification is a no-op.
+    final state = _cameraSnapshot.state;
+    final wasRecording =
+        state is CameraRecordingState ||
+        state is CameraPausedState ||
+        state is CameraStartingRecordingState ||
+        state is CameraSwitchingState;
+    if (!wasRecording) {
+      return;
+    }
+    _sealedSegmentCount += 1;
+    _setValueSafely(
+      _cameraSnapshot.copyWith(state: _cameraSegmentSealedState()),
+    );
+  }
+
+  /// Writer death is a *detected loss*, never a salvage: by the time it is
+  /// observable the writer has already failed, and a failed writer can never
+  /// be finalized. Native has torn the dead writer down and preserved any
+  /// earlier stash; all the controller must do is stop claiming to record, and
+  /// land in a state from which restarting is legal.
+  void _applyWriterFailed() {
+    if (_isControllerDisposed || _cameraSnapshot.description == null) {
+      return;
+    }
+    final state = _cameraSnapshot.state;
+    if (state is CameraDisposedState || state is CameraUninitializedState) {
+      return;
+    }
+    _setValueSafely(
+      _cameraSnapshot.copyWith(
+        state: _sealedSegmentCount > 0
+            ? _cameraSegmentSealedState()
+            : _cameraReadyState(),
+      ),
+    );
   }
 
   void _connectAudioLevelStream() {
@@ -706,7 +902,9 @@ class CameraController extends ValueNotifier<CameraState> {
         .listen(
           _audioLevelController.add,
           onError: (Object error, StackTrace stackTrace) {
-            debugPrint('pretty_awesome_camera audio level stream error: $error');
+            debugPrint(
+              'pretty_awesome_camera audio level stream error: $error',
+            );
           },
         );
   }
@@ -838,6 +1036,13 @@ class CameraController extends ValueNotifier<CameraState> {
         description: description ?? _cameraSnapshot.description!,
         hasMultipleCameras: hasMultipleCameras,
       );
+
+  CameraState _cameraSegmentSealedState() => CameraSegmentSealedState(
+    config: config,
+    description: _cameraSnapshot.description!,
+    sealedSegmentCount: _sealedSegmentCount,
+    hasMultipleCameras: hasMultipleCameras,
+  );
 
   CameraState _cameraSwitchingState() => CameraSwitchingState(
     config: config,

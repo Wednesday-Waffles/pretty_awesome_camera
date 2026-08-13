@@ -1,10 +1,7 @@
 import 'dart:math' as math;
 
 final class CameraPreviewSize {
-  const CameraPreviewSize({
-    required this.width,
-    required this.height,
-  });
+  const CameraPreviewSize({required this.width, required this.height});
 
   final int width;
   final int height;
@@ -18,10 +15,7 @@ final class CameraPreviewSize {
   }
 
   Map<String, Object?> toJson() {
-    return {
-      'width': width,
-      'height': height,
-    };
+    return {'width': width, 'height': height};
   }
 
   factory CameraPreviewSize.fromJson(Map<dynamic, dynamic> json) {

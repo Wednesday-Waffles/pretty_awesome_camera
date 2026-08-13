@@ -26,6 +26,7 @@ class CameraSnapshot {
     CameraInitializingState(:final config) => config,
     CameraReadyState(:final config) => config,
     CameraVideoRecordedState(:final config) => config,
+    CameraSegmentSealedState(:final config) => config,
     CameraStartingRecordingState(:final config) => config,
     CameraRecordingState(:final config) => config,
     CameraPausedState(:final config) => config,
@@ -39,6 +40,7 @@ class CameraSnapshot {
     CameraInitializingState(:final description) => description,
     CameraReadyState(:final description) => description,
     CameraVideoRecordedState(:final description) => description,
+    CameraSegmentSealedState(:final description) => description,
     CameraStartingRecordingState(:final description) => description,
     CameraRecordingState(:final description) => description,
     CameraPausedState(:final description) => description,
@@ -52,6 +54,7 @@ class CameraSnapshot {
     CameraInitializingState(:final error) => error,
     CameraReadyState(:final error) => error,
     CameraVideoRecordedState(:final error) => error,
+    CameraSegmentSealedState(:final error) => error,
     CameraStartingRecordingState(:final error) => error,
     CameraRecordingState(:final error) => error,
     CameraPausedState(:final error) => error,
@@ -63,6 +66,7 @@ class CameraSnapshot {
   bool get isInitialized => switch (state) {
     CameraReadyState() ||
     CameraVideoRecordedState() ||
+    CameraSegmentSealedState() ||
     CameraStartingRecordingState() ||
     CameraRecordingState() ||
     CameraPausedState() ||

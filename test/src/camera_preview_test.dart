@@ -23,7 +23,10 @@ class _FakePreviewCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<Map<String, Object?>?> startRecording(int cameraId) async => null;
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) async => null;
 
   @override
   Future<String> stopRecording(int cameraId) async => '/tmp/test.mov';

@@ -29,7 +29,49 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
-  Future<Map<String, Object?>?> startRecording(int cameraId) {
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Map<String, Object?>?> startRecordingSegment(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SegmentSealOutcome> sealRecordingSegment(
+    int cameraId, {
+    required String reason,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<List<SegmentSealOutcome>> consumeSealedSegments(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<WriterFailureReport?> consumeWriterFailure(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<RecordingCapabilities> getRecordingCapabilities() {
     throw UnimplementedError();
   }
 
@@ -121,7 +163,49 @@ class ConcretePrettyAwesomeCameraPlatform extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<Map<String, Object?>?> startRecording(int cameraId) {
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<Map<String, Object?>?> startRecordingSegment(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SegmentSealOutcome> sealRecordingSegment(
+    int cameraId, {
+    required String reason,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<List<SegmentSealOutcome>> consumeSealedSegments(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<WriterFailureReport?> consumeWriterFailure(int cameraId) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) {
+    throw UnimplementedError();
+  }
+
+  @override
+  Future<RecordingCapabilities> getRecordingCapabilities() {
     throw UnimplementedError();
   }
 

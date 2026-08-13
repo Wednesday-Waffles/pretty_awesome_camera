@@ -134,11 +134,7 @@ class CameraPreview extends StatelessWidget {
         maxWidth: childWidth,
         minHeight: childHeight,
         maxHeight: childHeight,
-        child: SizedBox(
-          width: childWidth,
-          height: childHeight,
-          child: texture,
-        ),
+        child: SizedBox(width: childWidth, height: childHeight, child: texture),
       ),
     );
   }
@@ -149,6 +145,7 @@ class CameraPreview extends StatelessWidget {
       CameraInitializingState() => state.error,
       CameraReadyState() => state.error,
       CameraVideoRecordedState() => state.error,
+      CameraSegmentSealedState() => state.error,
       CameraStartingRecordingState() => state.error,
       CameraRecordingState() => state.error,
       CameraPausedState() => state.error,

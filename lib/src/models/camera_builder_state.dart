@@ -3,6 +3,7 @@ import 'camera_config.dart';
 import 'camera_description.dart';
 import 'camera_exception.dart';
 import 'camera_state.dart';
+import 'recorded_segment.dart';
 
 /// Public-facing state exposed by [CameraBuilder].
 sealed class CameraBuilderState {
@@ -57,6 +58,10 @@ sealed class CameraBuilderState {
       CameraVideoRecordedState() => CameraBuilderVideoRecordedState._fromBase(
         base,
         recordedFilePath: value.recordedFilePath,
+      ),
+      CameraSegmentSealedState() => CameraBuilderSegmentSealedState._fromBase(
+        base,
+        sealedSegmentCount: value.sealedSegmentCount,
       ),
       CameraReadyState() => CameraBuilderReadyState._fromBase(base),
       CameraStartingRecordingState() =>
@@ -159,6 +164,45 @@ final class CameraBuilderVideoRecordedState extends ActiveCameraState {
 
   @override
   String get name => 'videoRecorded';
+}
+
+/// Native sealed the in-flight segment; the preview is still live and the
+/// caller must decide what happens to the salvaged media.
+///
+/// Both restart routes are exposed, because feasibility can only be learned by
+/// attempting: [resumeSegment] appends to what was salvaged, [startRecording]
+/// discards it and starts a fresh take.
+final class CameraBuilderSegmentSealedState extends ActiveCameraState {
+  CameraBuilderSegmentSealedState._fromBase(
+    _StateBase base, {
+    required this.sealedSegmentCount,
+  }) : super._(
+         controller: base.controller,
+         config: base.config,
+         description: base.description,
+         error: null,
+         hasMultipleCameras: base.hasMultipleCameras,
+       );
+
+  final int sealedSegmentCount;
+
+  /// Drains the native stash of sealed segments. Draining is destructive, so
+  /// call it once and keep the result.
+  Future<List<SegmentSealOutcome>> consumeSealedSegments() =>
+      controller.consumeSealedSegments();
+
+  /// Appends a new segment to the salvaged ones.
+  Future<Map<String, Object?>?> resumeSegment({
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) => controller.startRecordingSegment(salvagePolicy: salvagePolicy);
+
+  /// Discards the session and starts a fresh take.
+  Future<Map<String, Object?>?> startRecording({
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) => controller.startRecording(salvagePolicy: salvagePolicy);
+
+  @override
+  String get name => 'segmentSealed';
 }
 
 final class CameraBuilderStartingRecordingState extends ActiveCameraState {
@@ -284,6 +328,11 @@ final class _CameraStateMetadata {
         error: state.error,
       ),
       CameraVideoRecordedState() => _CameraStateMetadata(
+        config: state.config,
+        description: state.description,
+        error: state.error,
+      ),
+      CameraSegmentSealedState() => _CameraStateMetadata(
         config: state.config,
         description: state.description,
         error: state.error,

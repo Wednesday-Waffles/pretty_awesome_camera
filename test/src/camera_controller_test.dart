@@ -12,6 +12,7 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
       StreamController<AudioLevelEvent>.broadcast();
   List<CameraDescription> availableCameras = [];
   int getAvailableCamerasCallCount = 0;
+  final List<SalvagePolicy> startRecordingCalls = <SalvagePolicy>[];
 
   int nextCameraId = 1;
   int nextTextureId = 101;
@@ -52,7 +53,13 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   };
 
   @override
-  Future<Map<String, Object?>?> startRecording(int cameraId) async => startInfo;
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) async {
+    startRecordingCalls.add(salvagePolicy);
+    return startInfo;
+  }
 
   @override
   Future<Map<String, Object?>> getRecordingSettings(int cameraId) async {

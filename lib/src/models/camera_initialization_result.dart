@@ -1,19 +1,13 @@
 import 'camera_preview_size.dart';
 
 final class CameraInitializationResult {
-  const CameraInitializationResult({
-    required this.textureId,
-    this.previewSize,
-  });
+  const CameraInitializationResult({required this.textureId, this.previewSize});
 
   final int textureId;
   final CameraPreviewSize? previewSize;
 
   Map<String, Object?> toJson() {
-    return {
-      'textureId': textureId,
-      'previewSize': previewSize?.toJson(),
-    };
+    return {'textureId': textureId, 'previewSize': previewSize?.toJson()};
   }
 
   factory CameraInitializationResult.fromJson(Map<dynamic, dynamic> json) {

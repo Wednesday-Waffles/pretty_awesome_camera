@@ -5,6 +5,7 @@ import '../models/audio_level_event.dart';
 import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_initialization_result.dart';
+import '../models/recorded_segment.dart';
 import '../models/recording_state.dart';
 import '../models/switching_path.dart';
 import 'pretty_awesome_camera_method_channel.dart';
@@ -74,8 +75,89 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
   /// `isBluetoothInput`, and on Android additionally `isBluetoothAvailable`,
   /// `btRouteResult`, and `engagementElapsedMs`. May be null on older native
   /// builds that predate start-info.
-  Future<Map<String, Object?>?> startRecording(int cameraId) {
+  ///
+  /// [salvagePolicy] tells native whether it may seal the in-flight segment by
+  /// itself on interruption or backgrounding. It is decided once per take by
+  /// the caller and defaults to [SalvagePolicy.off], so upgrading the plugin
+  /// cannot change recording behavior until a caller opts in.
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
     throw UnimplementedError('startRecording() has not been implemented.');
+  }
+
+  /// Starts a new segment inside an existing session, appending to segments
+  /// already sealed.
+  ///
+  /// This is not [startRecording] minus its guard. After an interruption the
+  /// audio session is deactivated and the capture session may be stopped, so
+  /// implementations repair both before creating a writer — otherwise the new
+  /// segment is silent or empty while appearing to work.
+  ///
+  /// Failing here leaves the already-sealed segments untouched.
+  Future<Map<String, Object?>?> startRecordingSegment(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) {
+    throw UnimplementedError(
+      'startRecordingSegment() has not been implemented.',
+    );
+  }
+
+  /// Finalizes the in-flight segment and leaves the camera session running.
+  ///
+  /// Sealing an absent or already-sealed writer is not an error: the returned
+  /// outcome simply reports `ok: false` with no segment.
+  Future<SegmentSealOutcome> sealRecordingSegment(
+    int cameraId, {
+    required String reason,
+  }) {
+    throw UnimplementedError(
+      'sealRecordingSegment() has not been implemented.',
+    );
+  }
+
+  /// Atomically drains and clears the native stash of seal outcomes.
+  ///
+  /// One entry per seal *attempt*, in order. A duplicate notification
+  /// therefore drains an empty list rather than yielding a duplicate segment.
+  Future<List<SegmentSealOutcome>> consumeSealedSegments(int cameraId) {
+    throw UnimplementedError(
+      'consumeSealedSegments() has not been implemented.',
+    );
+  }
+
+  /// Drains the writer-failure diagnostic stash, or null when the writer has
+  /// not failed since the last drain.
+  Future<WriterFailureReport?> consumeWriterFailure(int cameraId) {
+    throw UnimplementedError(
+      'consumeWriterFailure() has not been implemented.',
+    );
+  }
+
+  /// Concatenates [segmentPaths] in order into [outputPath].
+  ///
+  /// Throws a [CameraException] with code `CONCAT_ERROR` on failure. Callers
+  /// must verify the reported duration against the sum of the input durations
+  /// before trusting the output — "succeeded" is not "playable".
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) {
+    throw UnimplementedError('concatenateSegments() has not been implemented.');
+  }
+
+  /// Reports what the underlying native build can do.
+  ///
+  /// Builds that predate salvage surface a [CameraException] with code
+  /// `NOT_IMPLEMENTED`; implementations map that to
+  /// [RecordingCapabilities.none] rather than throwing, so a stale native side
+  /// degrades to "no salvage" instead of breaking the recorder.
+  Future<RecordingCapabilities> getRecordingCapabilities() {
+    throw UnimplementedError(
+      'getRecordingCapabilities() has not been implemented.',
+    );
   }
 
   /// Returns the requested bitrate and resolved native recording configuration

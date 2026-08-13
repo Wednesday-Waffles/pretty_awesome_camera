@@ -7,6 +7,7 @@ import '../models/camera_config.dart';
 import '../models/camera_description.dart';
 import '../models/camera_exception.dart';
 import '../models/camera_initialization_result.dart';
+import '../models/recorded_segment.dart';
 import '../models/recording_state.dart';
 import 'switching_capability.dart';
 import 'pretty_awesome_camera_platform_interface.dart';
@@ -155,10 +156,28 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   }
 
   @override
-  Future<Map<String, Object?>?> startRecording(int cameraId) async {
+  Future<Map<String, Object?>?> startRecording(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) => _invokeStart('startRecording', cameraId, salvagePolicy);
+
+  @override
+  Future<Map<String, Object?>?> startRecordingSegment(
+    int cameraId, {
+    SalvagePolicy salvagePolicy = SalvagePolicy.off,
+  }) => _invokeStart('startRecordingSegment', cameraId, salvagePolicy);
+
+  Future<Map<String, Object?>?> _invokeStart(
+    String methodName,
+    int cameraId,
+    SalvagePolicy salvagePolicy,
+  ) async {
     final result = await _invokeCameraMethod<dynamic>(
-      'startRecording',
-      arguments: {'cameraId': cameraId},
+      methodName,
+      arguments: {
+        'cameraId': cameraId,
+        'salvagePolicy': salvagePolicy.wireName,
+      },
       fallbackMessage: 'Failed to start recording',
     );
     if (result is! Map) {
@@ -169,6 +188,99 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
     return Map<dynamic, dynamic>.from(
       result,
     ).map((key, value) => MapEntry(key.toString(), value as Object?));
+  }
+
+  @override
+  Future<SegmentSealOutcome> sealRecordingSegment(
+    int cameraId, {
+    required String reason,
+  }) async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'sealRecordingSegment',
+      arguments: {'cameraId': cameraId, 'reason': reason},
+      fallbackMessage: 'Failed to seal recording segment',
+    );
+    if (result is! Map) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned no seal outcome',
+      );
+    }
+    return SegmentSealOutcome.fromMap(Map<dynamic, dynamic>.from(result));
+  }
+
+  @override
+  Future<List<SegmentSealOutcome>> consumeSealedSegments(int cameraId) async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'consumeSealedSegments',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to consume sealed segments',
+    );
+    if (result is! Map) {
+      return const <SegmentSealOutcome>[];
+    }
+    final outcomes = Map<dynamic, dynamic>.from(result)['outcomes'];
+    if (outcomes is! List) {
+      return const <SegmentSealOutcome>[];
+    }
+    return outcomes
+        .whereType<Map<dynamic, dynamic>>()
+        .map(SegmentSealOutcome.fromMap)
+        .toList(growable: false);
+  }
+
+  @override
+  Future<WriterFailureReport?> consumeWriterFailure(int cameraId) async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'consumeWriterFailure',
+      arguments: {'cameraId': cameraId},
+      fallbackMessage: 'Failed to consume writer failure',
+    );
+    if (result is! Map) {
+      return null;
+    }
+    return WriterFailureReport.fromMap(Map<dynamic, dynamic>.from(result));
+  }
+
+  @override
+  Future<SegmentConcatResult> concatenateSegments({
+    required List<String> segmentPaths,
+    required String outputPath,
+  }) async {
+    final result = await _invokeCameraMethod<dynamic>(
+      'concatenateSegments',
+      arguments: {'segmentPaths': segmentPaths, 'outputPath': outputPath},
+      fallbackMessage: 'Failed to concatenate segments',
+    );
+    if (result is! Map) {
+      throw CameraException(
+        code: 'invalid_response',
+        message: 'Platform returned no concatenation result',
+      );
+    }
+    return SegmentConcatResult.fromMap(Map<dynamic, dynamic>.from(result));
+  }
+
+  @override
+  Future<RecordingCapabilities> getRecordingCapabilities() async {
+    try {
+      final result = await _invokeCameraMethod<dynamic>(
+        'getRecordingCapabilities',
+        fallbackMessage: 'Failed to get recording capabilities',
+      );
+      if (result is! Map) {
+        return RecordingCapabilities.none;
+      }
+      return RecordingCapabilities.fromMap(Map<dynamic, dynamic>.from(result));
+    } on CameraException catch (error) {
+      // A native build that predates salvage surfaces the missing handler as
+      // `NOT_IMPLEMENTED` (see [_cameraExceptionFromMissingPluginException]).
+      // That is the answer to the question, not a failure to answer it.
+      if (error.code == 'NOT_IMPLEMENTED') {
+        return RecordingCapabilities.none;
+      }
+      rethrow;
+    }
   }
 
   @override

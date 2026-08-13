@@ -857,6 +857,7 @@ class _CameraScreenState extends State<CameraScreen> {
       CameraInitializingState() => state.error,
       CameraReadyState() => state.error,
       CameraVideoRecordedState() => state.error,
+      CameraSegmentSealedState() => state.error,
       CameraStartingRecordingState() => state.error,
       CameraRecordingState() => state.error,
       CameraPausedState() => state.error,
@@ -929,6 +930,7 @@ class _CameraStatusCard extends StatelessWidget {
       ) => description?.lensDirection.name.toUpperCase() ?? '--',
       CameraReadyState(:final description) ||
       CameraVideoRecordedState(:final description) ||
+      CameraSegmentSealedState(:final description) ||
       CameraStartingRecordingState(:final description) ||
       CameraRecordingState(:final description) ||
       CameraPausedState(:final description) ||
@@ -995,6 +997,7 @@ class _CameraStatusCard extends StatelessWidget {
       CameraRecordingState() => const Color(0xFFFF5533),
       CameraPausedState() => Colors.amber,
       CameraReadyState() || CameraVideoRecordedState() => Colors.greenAccent,
+      CameraSegmentSealedState() => Colors.orangeAccent,
       CameraInitializingState() ||
       CameraStartingRecordingState() ||
       CameraSwitchingState() ||
