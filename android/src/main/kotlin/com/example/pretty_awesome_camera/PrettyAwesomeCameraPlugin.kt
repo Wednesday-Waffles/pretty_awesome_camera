@@ -1504,6 +1504,11 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         }
 
         cameraInstance.pendingSeal?.let { pendingSeal ->
+            val eventFile = finalizeOutputFile(event)
+            if (eventFile != null && eventFile != pendingSeal.outputFile) {
+                // Not this seal's recording; do not consume the holder.
+                return@let
+            }
             mainHandler.removeCallbacks(pendingSeal.timeoutRunnable)
             cameraInstance.pendingSeal = null
             failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
@@ -1530,13 +1535,39 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         )
     }
 
+    /**
+     * The file a Finalize event is actually about.
+     *
+     * Load-bearing after a seal timeout: we abandon the seal and null the
+     * recording, Dart starts a replacement segment, and CameraX may only then
+     * deliver the *old* recording's Finalize. Matching on the instance's
+     * current `recordingURL` would attribute that late event to the live
+     * segment — caching a CompletedFinalize against a file still being
+     * written, which `stopRecording` consumes before anything else and would
+     * return or delete.
+     */
+    private fun finalizeOutputFile(event: VideoRecordEvent.Finalize): File? {
+        return (event.outputOptions as? FileOutputOptions)?.file
+    }
+
     private fun cacheSpontaneousFinalize(
         cameraInstance: CameraInstance,
         event: VideoRecordEvent.Finalize
     ) {
-        val outputFile = cameraInstance.recordingURL
+        val currentFile = cameraInstance.recordingURL
             ?.takeIf { it.isNotEmpty() }
             ?.let { File(it) }
+        val eventFile = finalizeOutputFile(event)
+
+        // A Finalize for a file this instance is no longer recording belongs
+        // to an abandoned recording. Caching it — or clearing the live
+        // segment's bookkeeping on its behalf — corrupts the segment that is
+        // still running.
+        if (eventFile != null && currentFile != null && eventFile != currentFile) {
+            return
+        }
+
+        val outputFile = eventFile ?: currentFile
         if (outputFile != null) {
             cameraInstance.completedFinalize = CompletedFinalize(
                 outputFile = outputFile,

@@ -862,16 +862,17 @@ class CameraController extends ValueNotifier<CameraState> {
     if (_isControllerDisposed || _cameraSnapshot.description == null) {
       return;
     }
-    // A seal ends the in-flight recording. Any state that was mid-recording
-    // moves to sealed; anything else (already sealed, ready, disposed) is left
-    // alone so a duplicate notification is a no-op.
+    // Deliberately NOT gated on "was recording". The seal arrives on the
+    // audio-device channel while the recording-state channel is independent,
+    // so an `idle` from the latter can land first and leave this state
+    // `CameraReadyState`. Discarding the seal then would strand a segment
+    // native has already finalized: the app would drain a real file but the
+    // controller would reject `startRecordingSegment`, so Continue would be
+    // impossible for a take that was successfully salvaged.
+    //
+    // Only genuinely impossible states are refused.
     final state = _cameraSnapshot.state;
-    final wasRecording =
-        state is CameraRecordingState ||
-        state is CameraPausedState ||
-        state is CameraStartingRecordingState ||
-        state is CameraSwitchingState;
-    if (!wasRecording) {
+    if (state is CameraDisposedState || state is CameraUninitializedState) {
       return;
     }
     _sealedSegmentCount += 1;

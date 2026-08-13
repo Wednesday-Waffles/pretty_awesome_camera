@@ -734,6 +734,32 @@ void main() {
     });
 
     test(
+      'a seal is not lost when idle lands on the other channel first',
+      () async {
+        final controller = await recordingController();
+
+        // The seal rides the audio-device channel while recording-state is a
+        // separate channel, so ordering between them is not guaranteed. If an
+        // `idle` gets there first the controller is already `ready` — and
+        // discarding the seal would strand a segment native has finalized: the
+        // app drains a real file, but `startRecordingSegment` is refused, so
+        // Continue becomes impossible for a take that WAS salvaged.
+        platform.recordingStateController.add(RecordingState.idle);
+        await Future<void>.delayed(Duration.zero);
+        expect(controller.value, isA<CameraReadyState>());
+
+        await emit(recordingSegmentSealedEvent);
+
+        expect(controller.value, isA<CameraSegmentSealedState>());
+        expect(controller.sealedSegmentCount, 1);
+        await controller.startRecordingSegment(
+          salvagePolicy: SalvagePolicy.seal,
+        );
+        expect(controller.value, isA<CameraRecordingState>());
+      },
+    );
+
+    test(
       'an idle recording-state event does not wipe a sealed session',
       () async {
         final controller = await recordingController();
