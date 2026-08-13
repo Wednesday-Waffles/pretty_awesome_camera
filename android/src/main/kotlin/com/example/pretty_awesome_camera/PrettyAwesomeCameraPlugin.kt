@@ -1567,7 +1567,13 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
-        val outputFile = eventFile ?: currentFile
+        // Deliberately still keyed on `currentFile`, not on `eventFile`. Using
+        // the event's file would start caching finalizes that arrive after
+        // `recordingURL` was already cleared, which previously produced a
+        // NO_RECORDING error on the next stop. That may well be an
+        // improvement, but it is a behavior change this fix has no business
+        // making.
+        val outputFile = currentFile
         if (outputFile != null) {
             cameraInstance.completedFinalize = CompletedFinalize(
                 outputFile = outputFile,
