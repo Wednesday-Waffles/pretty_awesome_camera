@@ -76,6 +76,13 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         // legacy SCO) to confirm before starting on the built-in mic anyway.
         // Never fail a recording for Bluetooth.
         const val BT_ROUTE_TIMEOUT_MS = 2_000L
+
+        const val SALVAGE_POLICY_OFF = SalvagePolicyContract.OFF
+
+
+        const val SEAL_REASON_AUDIO_SOURCE_SILENCED = "audio_source_silenced"
+        const val SEAL_REASON_BACKGROUNDED = "backgrounded"
+        const val SEAL_REASON_EXPLICIT = "explicit"
     }
 
     private lateinit var channel: MethodChannel
@@ -97,6 +104,23 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         val result: Result,
         val outputFile: File,
         val timeoutRunnable: Runnable
+    )
+
+    /**
+     * A seal in flight: `recording.stop()` has been issued and we are waiting
+     * for CameraX to finalize. Unlike [PendingStop] the camera stays bound and
+     * `videoCapture` is untouched, so the instance is left ready to start the
+     * next segment without the preview ever blinking.
+     *
+     * [result] is null for a seal native triggered itself; those stash their
+     * outcome and notify Dart rather than resolving a call.
+     */
+    data class PendingSeal(
+        val reason: String,
+        val outputFile: File,
+        val timeoutRunnable: Runnable,
+        val startedAtMs: Long,
+        val result: Result?
     )
 
     // Exactly-once holder for the startRecording result: completed by
@@ -142,6 +166,17 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         var pendingStop: PendingStop? = null,
         var completedFinalize: CompletedFinalize? = null,
         var pendingDispose: PendingDispose? = null,
+        // --- Interrupted-recording salvage ---
+        // Whether native may seal by itself, and on what. Decided by Dart once
+        // per take and sent with the start call, so native never has to infer
+        // intent from pause state.
+        var salvagePolicy: String = SALVAGE_POLICY_OFF,
+        var pendingSeal: PendingSeal? = null,
+        // One entry per seal *attempt*, in order. Failures are kept too: a
+        // drain that only reported successes would make the seal-success rate
+        // unmeasurable and would sample only the takes that worked.
+        val sealedOutcomes: MutableList<Map<String, Any?>> = mutableListOf(),
+        var segmentStartedAtMs: Long = 0L,
         var pauseCount: Int = 0,
         var resumeCount: Int = 0,
         var switchCount: Int = 0,
@@ -176,6 +211,14 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             "canSwitchCamera" -> canSwitchCamera(call, result)
             "switchCamera" -> switchCamera(call, result)
             "canSwitchCurrentCamera" -> canSwitchCurrentCamera(result)
+            "startRecordingSegment" -> startRecordingSegment(call, result)
+            "sealRecordingSegment" -> sealRecordingSegmentMethod(call, result)
+            "consumeSealedSegments" -> consumeSealedSegments(call, result)
+            "consumeWriterFailure" -> consumeWriterFailure(call, result)
+            "concatenateSegments" -> concatenateSegments(call, result)
+            "getRecordingCapabilities" -> result.success(
+                mapOf("supportsSegmentSeal" to true, "supportsConcat" to true)
+            )
             "getBuildInfo" -> getBuildInfo(result)
             "getPlatformVersion" -> result.success("Android ${android.os.Build.VERSION.RELEASE}")
             else -> result.notImplemented()
@@ -640,6 +683,10 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
     }
 
     private fun startRecording(call: MethodCall, result: Result) {
+        startRecordingInternalEntry(call, result, isSegment = false)
+    }
+
+    private fun startRecordingInternalEntry(call: MethodCall, result: Result, isSegment: Boolean) {
         val cameraId = call.argument<Int>("cameraId")
         val cameraInstance = cameras[cameraId] ?: run {
             result.error("INVALID_CAMERA", "Camera not found", null)
@@ -685,7 +732,18 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        // Also resets pauseCount, which is what stops a sealed segment's pause
+        // history from keeping flip blocked (PAUSE_HISTORY_FLIP_UNSUPPORTED)
+        // for the rest of the session.
         resetRecordingState(cameraInstance)
+        if (!isSegment) {
+            // A fresh take supersedes anything salvaged. The caller owns those
+            // files; clearing here only drops our bookkeeping. Continuing a
+            // session must NOT reach this — it appends to what was salvaged.
+            cameraInstance.sealedOutcomes.clear()
+        }
+        cameraInstance.salvagePolicy = SalvagePolicyContract.normalize(call.argument<String>("salvagePolicy"))
+        cameraInstance.segmentStartedAtMs = SystemClock.uptimeMillis()
 
         // PendingStart covers the ENTIRE start operation — including the
         // asynchronous Bluetooth route engagement below — so a second start
@@ -837,8 +895,18 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
 
     private fun handleStatus(cameraInstance: CameraInstance, event: VideoRecordEvent.Status) {
         releaseBluetoothRoutingIfDeviceLost(cameraInstance)
-        val handler = audioLevelStreamHandlers[cameraInstance.cameraId] ?: return
+
         val audioStats = event.recordingStats.audioStats
+
+        // Evaluated before the stream-handler lookup below. That lookup is a
+        // camera-lifecycle guard, not a Dart-subscriber guard: the map is
+        // populated in initializeCamera regardless of subscription, and
+        // subscribing only sets the handler's sink. So this ordering is
+        // defence in depth rather than a fix for a live bug — but recovering a
+        // seized microphone must not sit behind any telemetry lookup.
+        maybeSealOnAudioLoss(cameraInstance, audioStats)
+
+        val handler = audioLevelStreamHandlers[cameraInstance.cameraId] ?: return
         handler.send(
             mapOf(
                 "amplitude" to audioStats.audioAmplitude,
@@ -1435,6 +1503,14 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
             return
         }
 
+        cameraInstance.pendingSeal?.let { pendingSeal ->
+            mainHandler.removeCallbacks(pendingSeal.timeoutRunnable)
+            cameraInstance.pendingSeal = null
+            failPendingPauseResume(cameraInstance, RecordingFinalizeContract.STOP_FINALIZED)
+            completeSealFromFinalize(cameraInstance, pendingSeal, event)
+            return
+        }
+
         val pendingStop = cameraInstance.pendingStop ?: run {
             cacheSpontaneousFinalize(cameraInstance, event)
             return
@@ -1473,6 +1549,30 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         cameraInstance.recording = null
         cameraInstance.recordingURL = null
         cameraInstance.isPaused = false
+
+        // Backgrounding finalizes through `bindToLifecycle`'s unbind rather
+        // than through any call of ours, so it lands here. Under the full
+        // `seal` policy that is a salvage; under `seal_interrupt_only` the
+        // caller owns backgrounding and turning every app switch into a prompt
+        // would be a regression, so the cached finalize is left exactly as it
+        // was before salvage existed.
+        if (!SalvagePolicyContract.allowsSeal(cameraInstance.salvagePolicy, isBackgroundTrigger = true)) return
+        val cached = cameraInstance.completedFinalize ?: return
+        val ok = RecordingFinalizeContract.decide(cached.error, cached.hasValidData).action ==
+            FinalizeAction.RETURN_PATH
+        if (!ok) return
+        cameraInstance.completedFinalize = null
+        stashAndNotifySeal(
+            cameraInstance,
+            sealOutcome(
+                ok = true,
+                path = cached.outputFile.absolutePath,
+                durationMs = (event.recordingStats.recordedDurationNanos / 1_000_000L).toInt(),
+                reason = SEAL_REASON_BACKGROUNDED,
+                writerStatus = RecordingFinalizeContract.errorName(cached.error),
+                sealLatencyMs = 0
+            )
+        )
     }
 
     private fun completeStopFromFinalize(
@@ -1537,6 +1637,346 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         cameraInstance.pendingResumeResult = null
     }
 
+
+    // ---------------------------------------------------------------------
+    // Interrupted-recording salvage
+    // ---------------------------------------------------------------------
+
+    /**
+     * Finalizes the in-flight recording and leaves the camera bound, so the
+     * preview never blinks and the next segment can start immediately.
+     *
+     * CameraX already produces a valid mp4 here — [RecordingFinalizeContract]
+     * keeps the file for exactly the interruption error codes — so the media
+     * work was never the missing piece on Android. What was missing is that
+     * nothing ever offered the file back to the user.
+     *
+     * Sealing an absent recording, or one already sealing or stopping, is not
+     * an error: it reports a failed *attempt* so duplicate triggers stay
+     * harmless and stay visible to telemetry.
+     */
+    private fun beginSeal(cameraInstance: CameraInstance, reason: String, result: Result?) {
+        val startedAtMs = SystemClock.uptimeMillis()
+
+        fun reject(writerStatus: String) {
+            val outcome = sealOutcome(
+                ok = false,
+                path = null,
+                durationMs = 0,
+                reason = reason,
+                writerStatus = writerStatus,
+                sealLatencyMs = 0
+            )
+            if (result != null) result.success(outcome) else stashAndNotifySeal(cameraInstance, outcome)
+        }
+
+        if (cameraInstance.pendingSeal != null) {
+            reject("seal_in_flight")
+            return
+        }
+        if (cameraInstance.pendingStop != null || cameraInstance.pendingDispose != null) {
+            reject("stop_in_flight")
+            return
+        }
+        val recording = cameraInstance.recording ?: run {
+            reject("not_recording")
+            return
+        }
+        val outputPath = cameraInstance.recordingURL?.takeIf { it.isNotEmpty() } ?: run {
+            reject("no_output")
+            return
+        }
+        val outputFile = File(outputPath)
+
+        // Same bound as a stop: a seal that never finalizes must not hang the
+        // caller's prompt forever.
+        val timeoutRunnable = Runnable {
+            val pendingSeal = cameraInstance.pendingSeal ?: return@Runnable
+            cameraInstance.pendingSeal = null
+            deleteQuietly(pendingSeal.outputFile)
+            cameraInstance.recording = null
+            cameraInstance.recordingURL = null
+            cameraInstance.isPaused = false
+            val outcome = sealOutcome(
+                ok = false,
+                path = null,
+                durationMs = 0,
+                reason = pendingSeal.reason,
+                writerStatus = RecordingFinalizeContract.STOP_TIMEOUT,
+                sealLatencyMs = (SystemClock.uptimeMillis() - pendingSeal.startedAtMs).toInt()
+            )
+            val heldResult = pendingSeal.result
+            if (heldResult != null) {
+                heldResult.success(outcome)
+            } else {
+                stashAndNotifySeal(cameraInstance, outcome)
+            }
+        }
+
+        cameraInstance.pendingSeal = PendingSeal(
+            reason = reason,
+            outputFile = outputFile,
+            timeoutRunnable = timeoutRunnable,
+            startedAtMs = startedAtMs,
+            result = result
+        )
+        mainHandler.postDelayed(timeoutRunnable, STOP_FINALIZE_TIMEOUT_MS)
+
+        try {
+            recording.stop()
+            cameraInstance.recording = null
+        } catch (e: Exception) {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            cameraInstance.pendingSeal = null
+            reject("stop_threw")
+        }
+    }
+
+    private fun completeSealFromFinalize(
+        cameraInstance: CameraInstance,
+        pendingSeal: PendingSeal,
+        event: VideoRecordEvent.Finalize
+    ) {
+        val hasValidData = outputHasValidData(event, pendingSeal.outputFile)
+        val decision = RecordingFinalizeContract.decide(event.error, hasValidData)
+
+        cameraInstance.recording = null
+        cameraInstance.recordingURL = null
+        cameraInstance.isPaused = false
+
+        val ok = decision.action == FinalizeAction.RETURN_PATH
+        if (!ok && decision.deletePartial) {
+            deleteQuietly(pendingSeal.outputFile)
+        }
+
+        val outcome = sealOutcome(
+            ok = ok,
+            path = if (ok) pendingSeal.outputFile.absolutePath else null,
+            durationMs = (event.recordingStats.recordedDurationNanos / 1_000_000L).toInt(),
+            reason = pendingSeal.reason,
+            writerStatus = RecordingFinalizeContract.errorName(event.error),
+            sealLatencyMs = (SystemClock.uptimeMillis() - pendingSeal.startedAtMs).toInt()
+        )
+
+        val heldResult = pendingSeal.result
+        if (heldResult != null) {
+            heldResult.success(outcome)
+        } else {
+            stashAndNotifySeal(cameraInstance, outcome)
+        }
+    }
+
+    private fun sealOutcome(
+        ok: Boolean,
+        path: String?,
+        durationMs: Int,
+        reason: String,
+        writerStatus: String,
+        sealLatencyMs: Int
+    ): Map<String, Any?> {
+        val outcome = mutableMapOf<String, Any?>(
+            "ok" to ok,
+            "durationMs" to durationMs,
+            "reason" to reason,
+            "writerStatus" to writerStatus,
+            "sealLatencyMs" to sealLatencyMs
+        )
+        if (path != null) {
+            outcome["path"] = path
+        }
+        return outcome
+    }
+
+    /**
+     * Stashes a natively-triggered seal outcome and notifies Dart.
+     *
+     * The notification is a bare name because the Dart event model keeps only
+     * four keys and silently drops the rest — a payload would arrive looking
+     * healthy with its contents gone. Success and failure therefore get
+     * *different names*, since the listener has to choose its next state
+     * before it can drain the stash.
+     *
+     * It is also sent to this camera's handler only: a seal is a per-recording
+     * fact, and broadcasting it would move another camera's controller out of
+     * its recording state.
+     */
+    private fun stashAndNotifySeal(cameraInstance: CameraInstance, outcome: Map<String, Any?>) {
+        cameraInstance.sealedOutcomes.add(outcome)
+        val ok = outcome["ok"] as? Boolean ?: false
+        val eventName = if (ok) "recordingSegmentSealed" else "recordingSegmentSealFailed"
+        audioStreamHandlers[cameraInstance.cameraId]?.sendEvent(eventName)
+    }
+
+    /**
+     * Seals when the microphone is taken away mid-recording.
+     *
+     * Audio focus is the wrong primitive here — it arbitrates *playback*.
+     * Android silences a *capture* client that loses priority, and CameraX
+     * reports that as `AUDIO_STATE_SOURCE_SILENCED` / `MUTED` on the Status
+     * event this plugin already receives. Until now that only fed a Dart
+     * warning banner; nothing stopped the recording, so the user kept
+     * "recording" silence.
+     */
+    private fun maybeSealOnAudioLoss(cameraInstance: CameraInstance, audioStats: AudioStats) {
+        if (!SalvagePolicyContract.allowsSeal(cameraInstance.salvagePolicy, isBackgroundTrigger = false)) return
+        if (cameraInstance.recording == null || cameraInstance.pendingSeal != null) return
+        if (cameraInstance.pendingStop != null || cameraInstance.pendingDispose != null) return
+
+        val silenced = audioStats.audioState == AudioStats.AUDIO_STATE_SOURCE_SILENCED ||
+            audioStats.audioState == AudioStats.AUDIO_STATE_MUTED
+        if (!silenced) return
+
+        beginSeal(cameraInstance, SEAL_REASON_AUDIO_SOURCE_SILENCED, result = null)
+    }
+
+    private fun startRecordingSegment(call: MethodCall, result: Result) {
+        // CameraX rebuilds nothing between segments — `videoCapture` stays
+        // bound through a seal — so a new segment is just another
+        // `prepareRecording`. Unlike a fresh take this preserves the stash.
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+        if (cameraInstance.recording != null || cameraInstance.pendingSeal != null) {
+            result.error(
+                "RECORDING_IN_PROGRESS",
+                "Camera is already recording",
+                recordingDiagnostics(cameraInstance, "start_recording_segment")
+            )
+            return
+        }
+        startRecordingInternalEntry(call, result, isSegment = true)
+    }
+
+    private fun sealRecordingSegmentMethod(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+        val reason = call.argument<String>("reason") ?: SEAL_REASON_EXPLICIT
+        beginSeal(cameraInstance, reason, result)
+    }
+
+    private fun consumeSealedSegments(call: MethodCall, result: Result) {
+        val cameraId = call.argument<Int>("cameraId")
+        val cameraInstance = cameras[cameraId] ?: run {
+            result.error("INVALID_CAMERA", "Camera not found", null)
+            return
+        }
+        // Drained atomically (single-threaded on main), so a duplicate
+        // notification yields an empty list rather than a duplicate segment.
+        val outcomes = cameraInstance.sealedOutcomes.toList()
+        cameraInstance.sealedOutcomes.clear()
+        result.success(mapOf("outcomes" to outcomes))
+    }
+
+    private fun consumeWriterFailure(call: MethodCall, result: Result) {
+        // Android has no equivalent of iOS's silently-dying AVAssetWriter:
+        // encoder death arrives as a Finalize with ERROR_ENCODING_FAILED /
+        // ERROR_RECORDER_ERROR, which RecordingFinalizeContract already turns
+        // into a typed error on the stop path. The method exists so the
+        // contract is symmetric across platforms.
+        result.success(null)
+    }
+
+    /**
+     * Concatenates finalized segments with Media3 `Transformer`.
+     *
+     * Deliberately not a hand-rolled `MediaExtractor`/`MediaMuxer` merge: this
+     * plugin previously had one and it was removed for producing malformed
+     * video. It read segments before their `moov` atom was written and took
+     * track formats from the first segment only, so segments with different
+     * codec-specific data were muxed under the wrong format — and the mux
+     * *succeeded*, which meant no fail-soft path ever ran. `Transformer`
+     * reconciles formats (transcoding only what needs it) and reports failure
+     * through `onError` instead of silently emitting garbage.
+     */
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun concatenateSegments(call: MethodCall, result: Result) {
+        val segmentPaths = call.argument<List<String>>("segmentPaths")
+        val outputPath = call.argument<String>("outputPath")
+        if (segmentPaths.isNullOrEmpty() || outputPath.isNullOrEmpty()) {
+            result.error("INVALID_ARGUMENT", "segmentPaths and outputPath are required", null)
+            return
+        }
+        val activity = this.activity ?: run {
+            result.error("NO_ACTIVITY", "Activity not available", null)
+            return
+        }
+
+        for (path in segmentPaths) {
+            val file = File(path)
+            if (!file.exists() || file.length() <= 0L) {
+                result.error(
+                    "CONCAT_ERROR",
+                    "Segment is missing or empty: $path",
+                    mapOf("native_segment" to path)
+                )
+                return
+            }
+        }
+
+        deleteQuietly(File(outputPath))
+
+        val editedItems = segmentPaths.map { path ->
+            androidx.media3.transformer.EditedMediaItem.Builder(
+                androidx.media3.common.MediaItem.fromUri(android.net.Uri.fromFile(File(path)))
+            ).build()
+        }
+        val sequence = androidx.media3.transformer.EditedMediaItemSequence.Builder(editedItems).build()
+        val composition = androidx.media3.transformer.Composition.Builder(sequence).build()
+
+        // Exactly-once: Transformer can call back more than once in edge
+        // cases, and a MethodChannel result may only be completed once.
+        var completed = false
+
+        val transformer = androidx.media3.transformer.Transformer.Builder(activity)
+            .addListener(object : androidx.media3.transformer.Transformer.Listener {
+                override fun onCompleted(
+                    composition: androidx.media3.transformer.Composition,
+                    exportResult: androidx.media3.transformer.ExportResult
+                ) {
+                    if (completed) return
+                    completed = true
+                    val durationMs = exportResult.durationMs.takeIf { it > 0 } ?: 0L
+                    result.success(
+                        mapOf("path" to outputPath, "durationMs" to durationMs.toInt())
+                    )
+                }
+
+                override fun onError(
+                    composition: androidx.media3.transformer.Composition,
+                    exportResult: androidx.media3.transformer.ExportResult,
+                    exportException: androidx.media3.transformer.ExportException
+                ) {
+                    if (completed) return
+                    completed = true
+                    deleteQuietly(File(outputPath))
+                    result.error(
+                        "CONCAT_ERROR",
+                        exportException.message ?: "Export failed",
+                        mapOf(
+                            "native_error_code" to exportException.errorCode,
+                            "native_segment_count" to segmentPaths.size
+                        )
+                    )
+                }
+            })
+            .build()
+
+        try {
+            transformer.start(composition, outputPath)
+        } catch (e: Exception) {
+            if (!completed) {
+                completed = true
+                deleteQuietly(File(outputPath))
+                result.error("CONCAT_ERROR", e.message ?: "Failed to start export", null)
+            }
+        }
+    }
+
     private fun resetRecordingState(cameraInstance: CameraInstance) {
         cameraInstance.recording = null
         cameraInstance.recordingURL = null
@@ -1546,6 +1986,7 @@ class PrettyAwesomeCameraPlugin : FlutterPlugin, MethodCallHandler, ActivityAwar
         cameraInstance.pendingResumeResult = null
         cameraInstance.pendingStart = null
         cameraInstance.pendingStop = null
+        cameraInstance.pendingSeal = null
         cameraInstance.completedFinalize = null
         cameraInstance.pendingDispose = null
         cameraInstance.pauseCount = 0
@@ -2080,6 +2521,17 @@ class AudioDeviceStreamHandler(context: Context) : EventChannel.StreamHandler {
 
     private fun emitAudioDeviceChanged() {
         eventSink?.success(currentAudioDeviceEvent("audioRouteChanged"))
+    }
+
+    /**
+     * Pushes a name-only notification on this camera's channel.
+     *
+     * The Dart event model keeps four keys and drops the rest, so the payload
+     * still has to be a full route event; only the `event` name carries
+     * meaning. Callers fetch the real data over the method channel.
+     */
+    fun sendEvent(event: String) {
+        eventSink?.success(currentAudioDeviceEvent(event))
     }
 
     private fun currentAudioDeviceEvent(event: String): Map<String, Any> {

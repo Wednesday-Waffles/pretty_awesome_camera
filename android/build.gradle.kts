@@ -33,6 +33,18 @@ plugins {
 // after a camera switch can NPE inside CameraX and lose the take (CU-86ajwvee8).
 val cameraXVersion = "1.7.0-alpha02"
 
+// Media3 Transformer concatenates salvaged segments. It is NOT version-aligned
+// with CameraX: CameraX ships its own recorder stack and pulls in no media3
+// artifacts, so there is nothing to align to and this version stands alone.
+//
+// Transformer specifically, not a hand-rolled MediaExtractor/MediaMuxer merge:
+// this plugin had one of those and it was removed for producing malformed
+// video. It took track formats from the first segment only, so segments whose
+// encoders emitted different codec-specific data were muxed under the wrong
+// format — and the mux SUCCEEDED, so no fail-soft path ever ran. Transformer
+// reconciles formats and reports failure through onError instead.
+val media3Version = "1.8.0"
+
 // Resolved at build time so the app can prove at runtime which plugin build it
 // is actually running (see the getBuildInfo method channel call).
 val pluginGitSha: String = runCatching {
@@ -107,6 +119,10 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraXVersion")
     implementation("androidx.camera:camera-video:$cameraXVersion")
     implementation("androidx.camera:camera-view:$cameraXVersion")
+
+    implementation("androidx.media3:media3-transformer:$media3Version")
+    implementation("androidx.media3:media3-common:$media3Version")
+    implementation("androidx.media3:media3-effect:$media3Version")
 
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.mockito:mockito-core:5.0.0")
