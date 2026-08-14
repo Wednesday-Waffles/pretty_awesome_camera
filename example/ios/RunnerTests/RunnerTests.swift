@@ -321,6 +321,86 @@ final class CameraSwitchTimelineSynchronizationTests: XCTestCase {
     XCTAssertTrue(timeline.consumePendingDiscontinuity(at: time(1_200)))
     XCTAssertFalse(timeline.discontinuityPending)
   }
+
+  func testPauseResumeOffsetDoesNotGrowAcrossLaterCameraSwitches() throws {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+    let videoInterval: Int64 = 33
+    let audioInterval: Int64 = 23
+
+    let lastVideoBeforePause = floorToGrid(1_999, interval: videoInterval)
+    let lastAudioBeforePause = floorToGrid(1_999, interval: audioInterval)
+    _ = appendedTime(video.adjustedTime(for: time(lastVideoBeforePause)))
+    _ = appendedTime(audio.adjustedTime(for: time(lastAudioBeforePause)))
+
+    video.markDiscontinuity()
+    audio.markDiscontinuity()
+    let firstVideoAfterPause = ceilToGrid(2_600, interval: videoInterval)
+    let firstAudioAfterPause = ceilToGrid(2_600, interval: audioInterval)
+    XCTAssertTrue(
+      video.consumePendingDiscontinuity(at: time(firstVideoAfterPause))
+    )
+    XCTAssertTrue(
+      audio.consumePendingDiscontinuity(at: time(firstAudioAfterPause))
+    )
+
+    var nextVideoSource = firstVideoAfterPause + videoInterval
+    var nextAudioSource = firstAudioAfterPause + audioInterval
+    _ = appendedTime(video.adjustedTime(for: time(nextVideoSource)))
+    _ = appendedTime(audio.adjustedTime(for: time(nextAudioSource)))
+
+    let pauseOffsetDelta = CMTimeSubtract(
+      audio.timeOffset,
+      video.timeOffset
+    )
+    XCTAssertLessThanOrEqual(
+      abs(CMTimeGetSeconds(pauseOffsetDelta) * 1_000),
+      40
+    )
+
+    for flipTime in stride(from: Int64(4_000), through: 12_000, by: 2_000) {
+      nextVideoSource = floorToGrid(flipTime - 1, interval: videoInterval)
+      nextAudioSource = floorToGrid(flipTime - 1, interval: audioInterval)
+      _ = appendedTime(video.adjustedTime(for: time(nextVideoSource)))
+      _ = appendedTime(audio.adjustedTime(for: time(nextAudioSource)))
+
+      video.markDiscontinuity()
+      audio.markDiscontinuity()
+      let stableVideoSource = ceilToGrid(
+        flipTime + 300,
+        interval: videoInterval
+      )
+      let sharedGap = try XCTUnwrap(
+        video.consumePendingDiscontinuityGap(at: time(stableVideoSource))
+      )
+      audio.applyPendingDiscontinuityGap(sharedGap)
+
+      let releasedAudioSource = ceilToGrid(
+        stableVideoSource,
+        interval: audioInterval
+      )
+      audio.observeDroppedSample(at: time(releasedAudioSource))
+
+      let nextVideo = appendedTime(
+        video.adjustedTime(for: time(stableVideoSource + videoInterval))
+      )
+      let nextAudio = appendedTime(
+        audio.adjustedTime(for: time(releasedAudioSource + audioInterval))
+      )
+      let alignmentMs = abs(
+        CMTimeGetSeconds(CMTimeSubtract(nextAudio, nextVideo)) * 1_000
+      )
+
+      XCTAssertLessThanOrEqual(alignmentMs, 60)
+      XCTAssertEqual(
+        CMTimeCompare(
+          CMTimeSubtract(audio.timeOffset, video.timeOffset),
+          pauseOffsetDelta
+        ),
+        0
+      )
+    }
+  }
 }
 
 final class CameraSwitchAssetWriterSynchronizationTests: XCTestCase {
