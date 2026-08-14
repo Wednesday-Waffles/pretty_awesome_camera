@@ -4,15 +4,21 @@ final class CameraInitializationResult {
   const CameraInitializationResult({
     required this.textureId,
     this.previewSize,
+    this.switchDiagnostics,
   });
 
   final int textureId;
   final CameraPreviewSize? previewSize;
 
+  /// Low-cardinality native timing diagnostics for a camera switch.
+  /// Null for initial camera setup and native builds that predate diagnostics.
+  final Map<String, Object?>? switchDiagnostics;
+
   Map<String, Object?> toJson() {
     return {
       'textureId': textureId,
       'previewSize': previewSize?.toJson(),
+      if (switchDiagnostics != null) 'switchDiagnostics': switchDiagnostics,
     };
   }
 
@@ -28,9 +34,17 @@ final class CameraInitializationResult {
       }
     }
 
+    final rawSwitchDiagnostics = json['switchDiagnostics'];
+    final switchDiagnostics = rawSwitchDiagnostics is Map
+        ? Map<dynamic, dynamic>.from(
+            rawSwitchDiagnostics,
+          ).map((key, value) => MapEntry(key.toString(), value as Object?))
+        : null;
+
     return CameraInitializationResult(
       textureId: json['textureId'] as int,
       previewSize: previewSize,
+      switchDiagnostics: switchDiagnostics,
     );
   }
 }

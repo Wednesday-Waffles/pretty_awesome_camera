@@ -34,6 +34,9 @@ void main() {
       final prepareIndex = switchSource.indexOf(
         'cameraInstance.previewTexture?.prepareForCameraSwitch',
       );
+      final audioHoldIndex = switchSource.indexOf(
+        'cameraInstance._cameraSwitchAudioGate.begin(',
+      );
       final beginConfigurationIndex = switchSource.indexOf(
         'captureSession.beginConfiguration()',
       );
@@ -52,14 +55,21 @@ void main() {
       final releaseIndex = switchSource.indexOf(
         'cameraInstance.previewTexture?.completeCameraSwitchStabilization()',
       );
+      final successfulAudioReleaseIndex = switchSource.lastIndexOf(
+        'cameraInstance._cameraSwitchAudioGate.release(',
+      );
 
+      expect(audioHoldIndex, greaterThanOrEqualTo(0));
+      expect(prepareIndex, greaterThan(audioHoldIndex));
       expect(prepareIndex, greaterThanOrEqualTo(0));
       expect(beginConfigurationIndex, greaterThan(prepareIndex));
       expect(successfulCommitIndex, greaterThan(beginConfigurationIndex));
       expect(videoTimelineIndex, greaterThan(successfulCommitIndex));
       expect(audioTimelineIndex, greaterThan(successfulCommitIndex));
       expect(pendingIndex, greaterThan(successfulCommitIndex));
+      expect(successfulAudioReleaseIndex, greaterThan(pendingIndex));
       expect(releaseIndex, greaterThan(pendingIndex));
+      expect(releaseIndex, greaterThan(successfulAudioReleaseIndex));
       expect(
         switchSource,
         contains('cameraInstance._videoTimeline.markDiscontinuity()'),
@@ -79,6 +89,12 @@ void main() {
             .allMatches(switchSource),
         hasLength(2),
       );
+      expect(
+        'cameraInstance._cameraSwitchAudioGate.release('.allMatches(
+          switchSource,
+        ),
+        hasLength(3),
+      );
 
       final videoStart = source.indexOf(
         'private func handleVideoSampleBuffer(',
@@ -87,6 +103,12 @@ void main() {
         'extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegate',
       );
       final videoSource = source.substring(videoStart, audioExtension);
+      final sharedGapIndex = videoSource.indexOf(
+        'guard let sharedGap = cameraInstance._videoTimeline',
+      );
+      final pendingClearIndex = videoSource.indexOf(
+        'cameraInstance._cameraSwitchGenerationPending = nil',
+      );
       expect(
         videoSource,
         contains('cameraInstance._cameraSwitchGenerationPending = nil'),
@@ -97,8 +119,14 @@ void main() {
       );
       expect(
         videoSource,
-        contains('cameraInstance._videoTimeline.consumePendingDiscontinuity'),
+        contains('consumePendingDiscontinuityGap(at: currentTime)'),
       );
+      expect(
+        videoSource,
+        contains('cameraInstance._audioTimeline.applyPendingDiscontinuityGap('),
+      );
+      expect(sharedGapIndex, greaterThanOrEqualTo(0));
+      expect(pendingClearIndex, greaterThan(sharedGapIndex));
     });
 
     test('both audio paths use only the audio timeline', () {
@@ -113,10 +141,16 @@ void main() {
         hasLength(2),
       );
       expect(
-        'if cameraInstance._cameraSwitchGenerationPending != nil'.allMatches(
+        'cameraInstance._cameraSwitchAudioGate.isHolding ||'.allMatches(
           audioSource,
         ),
         hasLength(2),
+      );
+      expect(
+        'cameraInstance._cameraSwitchAudioReleasePending'.allMatches(
+          audioSource,
+        ),
+        hasLength(4),
       );
       expect(audioSource, isNot(contains('cameraInstance._videoTimeline')));
     });
@@ -124,8 +158,14 @@ void main() {
     test('audio route transitions drop without retiming', () {
       expect(source, contains('_audioRouteDiscontinuityPending'));
       expect(
-        'cameraInstance._audioTimeline.observeDroppedSample'.allMatches(source),
+        'if cameraInstance._audioRouteDiscontinuityPending {'.allMatches(
+          source,
+        ),
         hasLength(2),
+      );
+      expect(
+        'cameraInstance._audioTimeline.observeDroppedSample'.allMatches(source),
+        hasLength(4),
       );
     });
   });

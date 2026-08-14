@@ -475,6 +475,31 @@ void main() {
 
       final filePath = await platform.stopRecording(0);
       expect(filePath, '/path/to/video.mp4');
+      expect(platform.lastRecordingDiagnostics(0), isNull);
+    });
+
+    test('returns file path and retains native success diagnostics', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(channel, (MethodCall methodCall) async {
+            if (methodCall.method == 'stopRecording') {
+              return {
+                'filePath': '/path/to/video.mov',
+                'diagnostics': {
+                  'native_camera_switch_committed_count': 3,
+                  'native_av_last_pts_delta_ms': 17,
+                },
+              };
+            }
+            return null;
+          });
+
+      final filePath = await platform.stopRecording(7);
+
+      expect(filePath, '/path/to/video.mov');
+      expect(platform.lastRecordingDiagnostics(7), {
+        'native_camera_switch_committed_count': 3,
+        'native_av_last_pts_delta_ms': 17,
+      });
     });
 
     test('returns null when null returned', () async {
@@ -778,6 +803,35 @@ void main() {
 
       final startInfo = await platform.startRecording(0);
       expect(startInfo, isNull);
+    });
+  });
+
+  group('switchCamera diagnostics', () {
+    test('parses low-cardinality native timing fields', () async {
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(platform.methodChannel, (methodCall) async {
+            if (methodCall.method == 'switchCamera') {
+              return {
+                'textureId': 42,
+                'previewSize': {'width': 1080, 'height': 1920},
+                'switchDiagnostics': {
+                  'native_switch_timeline_schema_version': 2,
+                  'native_switch_configuration_duration_ms': 84,
+                  'native_switch_audio_hold_applied': true,
+                },
+              };
+            }
+            return null;
+          });
+
+      final result = await platform.switchCamera(0);
+
+      expect(result.textureId, 42);
+      expect(result.switchDiagnostics, {
+        'native_switch_timeline_schema_version': 2,
+        'native_switch_configuration_duration_ms': 84,
+        'native_switch_audio_hold_applied': true,
+      });
     });
   });
 }

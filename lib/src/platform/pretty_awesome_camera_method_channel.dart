@@ -23,6 +23,8 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
   /// The switching capability detector instance.
   late final SwitchingCapability _switchingCapability = SwitchingCapability();
 
+  final Map<int, Map<String, Object?>> _lastRecordingDiagnostics = {};
+
   CameraException _cameraExceptionFromPlatformException(
     PlatformException exception,
     String fallbackMessage,
@@ -191,13 +193,41 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
 
   @override
   Future<String?> stopRecording(int cameraId) async {
-    final filePath = await _invokeCameraMethod<String>(
+    final result = await _invokeCameraMethod<dynamic>(
       'stopRecording',
       arguments: {'cameraId': cameraId},
       fallbackMessage: 'Failed to stop recording',
     );
-    return filePath;
+    if (result == null) {
+      _lastRecordingDiagnostics.remove(cameraId);
+      return null;
+    }
+    if (result is String) {
+      // Backwards compatibility with existing iOS and Android native builds.
+      _lastRecordingDiagnostics.remove(cameraId);
+      return result;
+    }
+    if (result is Map) {
+      final resultMap = Map<dynamic, dynamic>.from(result);
+      final rawDiagnostics = resultMap['diagnostics'];
+      if (rawDiagnostics is Map) {
+        _lastRecordingDiagnostics[cameraId] = Map<dynamic, dynamic>.from(
+          rawDiagnostics,
+        ).map((key, value) => MapEntry(key.toString(), value as Object?));
+      } else {
+        _lastRecordingDiagnostics.remove(cameraId);
+      }
+      return resultMap['filePath'] as String?;
+    }
+    throw CameraException(
+      code: 'invalid_response',
+      message: 'Platform returned an invalid recording stop result',
+    );
   }
+
+  @override
+  Map<String, Object?>? lastRecordingDiagnostics(int cameraId) =>
+      _lastRecordingDiagnostics[cameraId];
 
   @override
   Future<void> pauseRecording(int cameraId) async {
@@ -240,6 +270,7 @@ class MethodChannelPrettyAwesomeCamera extends PrettyAwesomeCameraPlatform {
       arguments: {'cameraId': cameraId},
       fallbackMessage: 'Failed to dispose camera',
     );
+    _lastRecordingDiagnostics.remove(cameraId);
   }
 
   @override

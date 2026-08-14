@@ -54,11 +54,21 @@ class CameraController extends ValueNotifier<CameraState> {
   Stream<AudioLevelEvent> get onAudioLevel => _audioLevelController.stream;
 
   Map<String, Object?>? _lastRecordingStartInfo;
+  Map<String, Object?>? _lastRecordingDiagnostics;
+  Map<String, Object?>? _lastCameraSwitchDiagnostics;
 
   /// Audio-route info reported by the platform when the most recent
   /// recording started (null before the first recording, or when the native
   /// build predates start-info).
   Map<String, Object?>? get lastRecordingStartInfo => _lastRecordingStartInfo;
+
+  /// Native timeline diagnostics captured with the most recent successful stop.
+  Map<String, Object?>? get lastRecordingDiagnostics =>
+      _lastRecordingDiagnostics;
+
+  /// Native timing diagnostics returned by the most recent camera switch.
+  Map<String, Object?>? get lastCameraSwitchDiagnostics =>
+      _lastCameraSwitchDiagnostics;
 
   CameraController({
     CameraDescription? description,
@@ -231,6 +241,7 @@ class CameraController extends ValueNotifier<CameraState> {
     _setValueSafely(
       _cameraSnapshot.copyWith(state: _cameraStartingRecordingState()),
     );
+    _lastRecordingDiagnostics = null;
 
     try {
       final startInfo = await _platform.startRecording(cameraId!);
@@ -303,6 +314,7 @@ class CameraController extends ValueNotifier<CameraState> {
       return inFlight;
     }
 
+    _lastCameraSwitchDiagnostics = null;
     final future = _switchCameraInternal();
     _switchCameraFuture = future;
     return future.whenComplete(() {
@@ -343,6 +355,7 @@ class CameraController extends ValueNotifier<CameraState> {
 
       try {
         final switchResult = await _platform.switchCamera(cameraId!);
+        _lastCameraSwitchDiagnostics = switchResult.switchDiagnostics;
         if (value is CameraSwitchingState) {
           _setValueSafely(
             _cameraSnapshot.copyWith(
@@ -391,6 +404,7 @@ class CameraController extends ValueNotifier<CameraState> {
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
+      _lastCameraSwitchDiagnostics = switchResult.switchDiagnostics;
       if (value is CameraSwitchingState) {
         _setValueSafely(
           _cameraSnapshot.copyWith(
@@ -426,6 +440,7 @@ class CameraController extends ValueNotifier<CameraState> {
 
     try {
       final switchResult = await _platform.switchCamera(cameraId!);
+      _lastCameraSwitchDiagnostics = switchResult.switchDiagnostics;
       if (value is CameraSwitchingState) {
         _setValueSafely(
           _cameraSnapshot.copyWith(
@@ -488,6 +503,7 @@ class CameraController extends ValueNotifier<CameraState> {
   Future<String?> _stopRecordingInternal(CameraSnapshot previous) async {
     try {
       final filePath = await _platform.stopRecording(cameraId!);
+      _lastRecordingDiagnostics = _platform.lastRecordingDiagnostics(cameraId!);
       if (filePath != null) {
         _setValueSafely(
           _cameraSnapshot.copyWith(
@@ -706,7 +722,9 @@ class CameraController extends ValueNotifier<CameraState> {
         .listen(
           _audioLevelController.add,
           onError: (Object error, StackTrace stackTrace) {
-            debugPrint('pretty_awesome_camera audio level stream error: $error');
+            debugPrint(
+              'pretty_awesome_camera audio level stream error: $error',
+            );
           },
         );
   }

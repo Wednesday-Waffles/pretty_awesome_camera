@@ -19,6 +19,8 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   int? lastZoomCameraId;
   double? lastZoomFactor;
   String stopRecordingPath = '/tmp/test.mov';
+  Map<String, Object?>? recordingDiagnostics;
+  Map<String, Object?>? switchDiagnostics;
   CameraPreviewSize previewSize = const CameraPreviewSize(
     width: 1440,
     height: 1080,
@@ -68,6 +70,10 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
   Future<String> stopRecording(int cameraId) async => stopRecordingPath;
 
   @override
+  Map<String, Object?>? lastRecordingDiagnostics(int cameraId) =>
+      recordingDiagnostics;
+
+  @override
   Future<void> pauseRecording(int cameraId) async {}
 
   @override
@@ -106,6 +112,7 @@ class FakeCameraPlatform extends PrettyAwesomeCameraPlatform {
     return CameraInitializationResult(
       textureId: nextTextureId++,
       previewSize: previewSize,
+      switchDiagnostics: switchDiagnostics,
     );
   }
 
@@ -292,6 +299,30 @@ void main() {
         '/tmp/test.mov',
       ),
     );
+  });
+
+  test('retains native switch and stop diagnostics', () async {
+    platform.switchDiagnostics = const {
+      'native_switch_configuration_duration_ms': 72,
+    };
+    platform.recordingDiagnostics = const {'native_av_last_pts_delta_ms': 14};
+    final controller = CameraController(
+      description: description,
+      availableCameras: platform.availableCameras,
+      platform: platform,
+    );
+
+    await controller.prewarmUp();
+    await controller.startRecording();
+    await controller.switchCamera();
+    expect(controller.lastCameraSwitchDiagnostics, {
+      'native_switch_configuration_duration_ms': 72,
+    });
+
+    await controller.stopRecording();
+    expect(controller.lastRecordingDiagnostics, {
+      'native_av_last_pts_delta_ms': 14,
+    });
   });
 
   test('switch camera updates texture and returns to recording', () async {

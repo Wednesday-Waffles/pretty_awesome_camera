@@ -19,15 +19,20 @@ void main() {
       final formatSnapshot = finishStopSource.indexOf(
         'let audioConverterInputFormat = cameraInstance.audioConverterInputFormat',
       );
+      final timelineSnapshot = finishStopSource.indexOf(
+        'let recordingDiagnostics = self.recordingTimelineDiagnosticsLocked(',
+      );
       final converterCleanup = finishStopSource.indexOf(
         'cameraInstance.resetAudioConverter()',
       );
 
       expect(converterSnapshot, greaterThanOrEqualTo(0));
       expect(formatSnapshot, greaterThanOrEqualTo(0));
+      expect(timelineSnapshot, greaterThanOrEqualTo(0));
       expect(converterCleanup, greaterThanOrEqualTo(0));
       expect(converterSnapshot, lessThan(converterCleanup));
       expect(formatSnapshot, lessThan(converterCleanup));
+      expect(timelineSnapshot, lessThan(converterCleanup));
       expect(
         finishStopSource,
         contains('hasAudioConverter: hadAudioConverter'),
@@ -44,6 +49,12 @@ void main() {
       expect(source, contains('"native_underlying_error_code"'));
       expect(source, contains('"native_under_err_domain"'));
       expect(source, contains('"native_under_err_code"'));
+      expect(source, contains('"native_camera_switch_audio_hold_total_ms"'));
+      expect(source, contains('"native_timeline_offset_delta_ms"'));
+      expect(source, contains('"native_av_last_pts_delta_ms"'));
+      expect(source, contains('"native_video_append_failure_count"'));
+      expect(source, contains('"native_audio_append_failure_count"'));
+      expect(finishStopSource, contains('"diagnostics": recordingDiagnostics'));
     });
   });
 }

@@ -35,16 +35,39 @@ struct MediaTimelineState {
         guard discontinuityPending else { return false }
         guard sourceTime.isNumeric else { return true }
 
+        _ = consumePendingDiscontinuityGap(at: sourceTime)
+        return true
+    }
+
+    /// Consumes a pending boundary and returns the positive gap applied to this
+    /// timeline. Camera switching uses the video-derived gap for both tracks so
+    /// their offsets cannot diverge by callback-grid quantization on each flip.
+    mutating func consumePendingDiscontinuityGap(at sourceTime: CMTime) -> CMTime? {
+        guard discontinuityPending, sourceTime.isNumeric else { return nil }
+
+        var appliedGap = CMTime.zero
         if let lastSourceTime {
             let gap = CMTimeSubtract(sourceTime, lastSourceTime)
             if gap.isNumeric && CMTimeCompare(gap, .zero) > 0 {
                 timeOffset = CMTimeAdd(timeOffset, gap)
+                appliedGap = gap
             }
         }
 
         discontinuityPending = false
         lastSourceTime = sourceTime
-        return true
+        return appliedGap
+    }
+
+    /// Applies a camera-switch gap calculated by the video boundary. Unlike a
+    /// track-local consume, this deliberately leaves `lastSourceTime` unchanged
+    /// so the first released audio sample can be appended on the shared clock.
+    mutating func applyPendingDiscontinuityGap(_ gap: CMTime) {
+        guard discontinuityPending else { return }
+        if gap.isNumeric && CMTimeCompare(gap, .zero) > 0 {
+            timeOffset = CMTimeAdd(timeOffset, gap)
+        }
+        discontinuityPending = false
     }
 
     /// Records a deliberately dropped sample without compressing its gap. Used
@@ -62,12 +85,12 @@ struct MediaTimelineState {
         let adjustedTime = CMTimeSubtract(sourceTime, timeOffset)
         guard adjustedTime.isNumeric else { return .dropInvalidSourceTime }
 
-        lastSourceTime = sourceTime
         if let previous = lastAdjustedTime,
            CMTimeCompare(adjustedTime, previous) <= 0 {
             return .dropNonMonotonic(candidate: adjustedTime, previous: previous)
         }
 
+        lastSourceTime = sourceTime
         lastAdjustedTime = adjustedTime
         return .append(adjustedTime)
     }
@@ -84,9 +107,11 @@ struct CameraSwitchFrameGate {
     private(set) var stabilizationFramesRemaining = 0
     private(set) var generation: UInt64 = 0
     private var generationBeforeSwitch: UInt64?
+    private var stabilizationFramesBeforeSwitch: Int?
 
     mutating func prepare() -> UInt64 {
         generationBeforeSwitch = generation
+        stabilizationFramesBeforeSwitch = stabilizationFramesRemaining
         generation &+= 1
         isSwitchInProgress = true
         stabilizationFramesRemaining = 0
@@ -95,6 +120,7 @@ struct CameraSwitchFrameGate {
 
     mutating func complete(stabilizationFrameCount: Int) {
         generationBeforeSwitch = nil
+        stabilizationFramesBeforeSwitch = nil
         isSwitchInProgress = false
         stabilizationFramesRemaining = max(0, stabilizationFrameCount)
     }
@@ -103,9 +129,12 @@ struct CameraSwitchFrameGate {
         if let generationBeforeSwitch {
             generation = generationBeforeSwitch
         }
+        if let stabilizationFramesBeforeSwitch {
+            stabilizationFramesRemaining = stabilizationFramesBeforeSwitch
+        }
         generationBeforeSwitch = nil
+        stabilizationFramesBeforeSwitch = nil
         isSwitchInProgress = false
-        stabilizationFramesRemaining = 0
     }
 
     mutating func shouldDropFrame() -> Bool {
@@ -121,6 +150,37 @@ struct CameraSwitchFrameGate {
 
     var isDroppingFrames: Bool {
         isSwitchInProgress || stabilizationFramesRemaining > 0
+    }
+}
+
+/// Recording-lock-owned audio suppression for capture-session reconfiguration.
+///
+/// Video callbacks stop before `beginConfiguration()`. Audio must stop at the
+/// same boundary or every successful switch advances audio relative to video by
+/// the reconfiguration duration. The existing generation gate continues to
+/// suppress audio after commit until the first stable new-camera video frame.
+struct CameraSwitchAudioGate {
+    private(set) var isHolding = false
+    private var startedAtUptime: TimeInterval?
+
+    mutating func begin(at uptime: TimeInterval) {
+        guard !isHolding else { return }
+        isHolding = true
+        startedAtUptime = uptime
+    }
+
+    /// Releases the gate and returns the measured hold duration in milliseconds.
+    @discardableResult
+    mutating func release(at uptime: TimeInterval) -> Int? {
+        guard isHolding else { return nil }
+        defer { reset() }
+        guard let startedAtUptime else { return nil }
+        return max(0, Int(((uptime - startedAtUptime) * 1000).rounded()))
+    }
+
+    mutating func reset() {
+        isHolding = false
+        startedAtUptime = nil
     }
 }
 
@@ -183,9 +243,24 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _hasPrewarmedRecordingPipeline: Bool = false
         fileprivate var _videoTimeline = MediaTimelineState()
         fileprivate var _audioTimeline = MediaTimelineState()
+        fileprivate var _cameraSwitchAudioGate = CameraSwitchAudioGate()
+        fileprivate var _cameraSwitchAudioReleasePending = false
         // Keeps audio from consuming its post-switch discontinuity before the
         // video pipeline has delivered a stable frame from the new camera.
         fileprivate var _cameraSwitchGenerationPending: UInt64?
+        // Low-cardinality recording diagnostics. These counters never
+        // participate in capture or timestamp decisions.
+        fileprivate var _cameraSwitchCommittedCount = 0
+        fileprivate var _cameraSwitchRejectedCount = 0
+        fileprivate var _cameraSwitchConfigurationTotalMs = 0
+        fileprivate var _cameraSwitchConfigurationMaxMs = 0
+        fileprivate var _cameraSwitchAudioHoldTotalMs = 0
+        fileprivate var _cameraSwitchAudioHoldMaxMs = 0
+        fileprivate var _cameraSwitchHeldAudioSampleCount = 0
+        fileprivate var _videoNonMonotonicDropCount = 0
+        fileprivate var _audioNonMonotonicDropCount = 0
+        fileprivate var _videoAppendFailureCount = 0
+        fileprivate var _audioAppendFailureCount = 0
         fileprivate var _isFirstVideoFrame: Bool = true
         fileprivate var _isFirstAudioFrame: Bool = true
         fileprivate var _sessionStartTime: CMTime = .zero
@@ -785,6 +860,65 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
     }
 
+    private static func timeMilliseconds(_ time: CMTime?) -> Int? {
+        guard let time, time.isNumeric else { return nil }
+        let seconds = CMTimeGetSeconds(time)
+        guard seconds.isFinite else { return nil }
+        return Int((seconds * 1000).rounded())
+    }
+
+    /// Caller holds `recordingLock`. Values are diagnostics-only and use
+    /// low-cardinality numeric/boolean fields suitable for operational telemetry.
+    private func recordingTimelineDiagnosticsLocked(
+        _ cameraInstance: CameraInstance
+    ) -> [String: Any] {
+        let videoOffsetMs = Self.timeMilliseconds(
+            cameraInstance._videoTimeline.timeOffset
+        ) ?? 0
+        let audioOffsetMs = Self.timeMilliseconds(
+            cameraInstance._audioTimeline.timeOffset
+        ) ?? 0
+        let videoLastPtsMs = Self.timeMilliseconds(
+            cameraInstance._videoTimeline.lastAdjustedTime
+        )
+        let audioLastPtsMs = Self.timeMilliseconds(
+            cameraInstance._audioTimeline.lastAdjustedTime
+        )
+
+        var diagnostics: [String: Any] = [
+            "native_timeline_schema_version": 2,
+            "native_camera_switch_committed_count": cameraInstance._cameraSwitchCommittedCount,
+            "native_camera_switch_rejected_count": cameraInstance._cameraSwitchRejectedCount,
+            "native_camera_switch_configuration_total_ms": cameraInstance._cameraSwitchConfigurationTotalMs,
+            "native_camera_switch_configuration_max_ms": cameraInstance._cameraSwitchConfigurationMaxMs,
+            "native_camera_switch_audio_hold_total_ms": cameraInstance._cameraSwitchAudioHoldTotalMs,
+            "native_camera_switch_audio_hold_max_ms": cameraInstance._cameraSwitchAudioHoldMaxMs,
+            "native_camera_switch_held_audio_sample_count": cameraInstance._cameraSwitchHeldAudioSampleCount,
+            "native_camera_switch_audio_gate_active_at_stop": cameraInstance._cameraSwitchAudioGate.isHolding,
+            "native_camera_switch_audio_release_pending_at_stop": cameraInstance._cameraSwitchAudioReleasePending,
+            "native_camera_switch_generation_pending_at_stop": cameraInstance._cameraSwitchGenerationPending != nil,
+            "native_video_timeline_offset_ms": videoOffsetMs,
+            "native_audio_timeline_offset_ms": audioOffsetMs,
+            "native_timeline_offset_delta_ms": audioOffsetMs - videoOffsetMs,
+            "native_video_non_monotonic_drop_count": cameraInstance._videoNonMonotonicDropCount,
+            "native_audio_non_monotonic_drop_count": cameraInstance._audioNonMonotonicDropCount,
+            "native_video_append_failure_count": cameraInstance._videoAppendFailureCount,
+            "native_audio_append_failure_count": cameraInstance._audioAppendFailureCount
+        ]
+        if let videoLastPtsMs {
+            diagnostics["native_video_last_adjusted_pts_ms"] = videoLastPtsMs
+        }
+        if let audioLastPtsMs {
+            diagnostics["native_audio_last_adjusted_pts_ms"] = audioLastPtsMs
+        }
+        if let videoLastPtsMs, let audioLastPtsMs {
+            let deltaMs = audioLastPtsMs - videoLastPtsMs
+            diagnostics["native_av_last_pts_delta_ms"] = deltaMs
+            diagnostics["native_av_last_pts_delta_abs_ms"] = abs(deltaMs)
+        }
+        return diagnostics
+    }
+
     private func recordingStopErrorDetails(
         cameraInstance: CameraInstance,
         stage: String,
@@ -818,6 +952,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         let actualAudioSampleRate = cameraInstance.actualAudioSampleRate
         let recordingAudioSampleRate = cameraInstance.recordingAudioSampleRate
         let recordingAudioChannelCount = cameraInstance.recordingAudioChannelCount
+        let timelineDiagnostics = recordingTimelineDiagnosticsLocked(cameraInstance)
         os_unfair_lock_unlock(&cameraInstance.recordingLock)
 
         let effectiveHasAudioConverter = hasAudioConverter ?? lockedHasAudioConverter
@@ -843,6 +978,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             "native_capture_width": Int(cameraInstance.captureDimensions.width),
             "native_capture_height": Int(cameraInstance.captureDimensions.height)
         ]
+        for (key, value) in timelineDiagnostics {
+            details[key] = value
+        }
 
         if let assetWriter {
             details["native_writer_status"] = assetWriterStatusName(assetWriter.status)
@@ -1185,7 +1323,20 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
                 cameraInstance._videoTimeline.reset()
                 cameraInstance._audioTimeline.reset()
+                cameraInstance._cameraSwitchAudioGate.reset()
+                cameraInstance._cameraSwitchAudioReleasePending = false
                 cameraInstance._cameraSwitchGenerationPending = nil
+                cameraInstance._cameraSwitchCommittedCount = 0
+                cameraInstance._cameraSwitchRejectedCount = 0
+                cameraInstance._cameraSwitchConfigurationTotalMs = 0
+                cameraInstance._cameraSwitchConfigurationMaxMs = 0
+                cameraInstance._cameraSwitchAudioHoldTotalMs = 0
+                cameraInstance._cameraSwitchAudioHoldMaxMs = 0
+                cameraInstance._cameraSwitchHeldAudioSampleCount = 0
+                cameraInstance._videoNonMonotonicDropCount = 0
+                cameraInstance._audioNonMonotonicDropCount = 0
+                cameraInstance._videoAppendFailureCount = 0
+                cameraInstance._audioAppendFailureCount = 0
                 cameraInstance._audioRouteDiscontinuityPending = false
                 cameraInstance._lastAcceptedAudioSampleTime = .zero
                 cameraInstance._audioRouteSwitchCount = 0
@@ -1444,6 +1595,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             
             let videoInput = try AVCaptureDeviceInput(device: device)
             var switchError: FlutterError?
+            var switchDiagnostics: [String: Any]?
             
             // Apply frame rate preservation during recording
             if cameraInstance.isRecording,
@@ -1461,10 +1613,23 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             sessionQueue.sync {
-                // Close the video callback gate before reconfiguration. The
-                // gate stays closed until this switch either commits or is
-                // explicitly cancelled, so an old-camera callback cannot
-                // consume the new timeline boundary.
+                let configurationStartedAt = ProcessInfo.processInfo.systemUptime
+
+                // Hold audio before closing the video callback gate. This
+                // makes both tracks stop at the same reconfiguration boundary;
+                // the recording lock also keeps a callback that already passed
+                // its queue guard from slipping between these operations.
+                os_unfair_lock_lock(&cameraInstance.recordingLock)
+                let wasRecordingAtSwitchStart = cameraInstance._isRecording
+                if wasRecordingAtSwitchStart {
+                    cameraInstance._cameraSwitchAudioGate.begin(
+                        at: configurationStartedAt
+                    )
+                }
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+                // Close the video callback gate before reconfiguration. It
+                // stays closed until this switch commits or is cancelled.
                 let switchGeneration = cameraInstance.previewTexture?.prepareForCameraSwitch(position: newPosition)
                 captureSession.beginConfiguration()
 
@@ -1479,8 +1644,32 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                         captureSession.addInput(input)
                     }
                     captureSession.commitConfiguration()
+                    let completedAt = ProcessInfo.processInfo.systemUptime
+                    let configurationDurationMs = Self.elapsedMilliseconds(
+                        from: configurationStartedAt,
+                        to: completedAt
+                    )
+                    os_unfair_lock_lock(&cameraInstance.recordingLock)
                     cameraInstance.previewTexture?.cancelCameraSwitchStabilization()
-                    switchError = FlutterError(code: "SWITCH_ERROR", message: "Unable to add new camera input", details: nil)
+                    let audioHoldDurationMs = cameraInstance._cameraSwitchAudioGate.release(
+                        at: completedAt
+                    )
+                    self.recordCameraSwitchMetricsLocked(
+                        cameraInstance,
+                        committed: false,
+                        wasRecording: wasRecordingAtSwitchStart,
+                        configurationDurationMs: configurationDurationMs,
+                        audioHoldDurationMs: audioHoldDurationMs
+                    )
+                    os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                    switchError = self.cameraSwitchFlutterError(
+                        code: "SWITCH_ERROR",
+                        message: "Unable to add new camera input",
+                        stage: "can_add_input_rejected",
+                        wasRecording: wasRecordingAtSwitchStart,
+                        configurationDurationMs: configurationDurationMs,
+                        audioHoldDurationMs: audioHoldDurationMs
+                    )
                     return
                 }
                 captureSession.addInput(videoInput)
@@ -1505,8 +1694,32 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     }
                     cameraInstance.zoomFactor = previousZoomFactor
                     captureSession.commitConfiguration()
+                    let completedAt = ProcessInfo.processInfo.systemUptime
+                    let configurationDurationMs = Self.elapsedMilliseconds(
+                        from: configurationStartedAt,
+                        to: completedAt
+                    )
+                    os_unfair_lock_lock(&cameraInstance.recordingLock)
                     cameraInstance.previewTexture?.cancelCameraSwitchStabilization()
-                    switchError = FlutterError(code: "SWITCH_UNSUPPORTED", message: "New camera does not support the active recording configuration", details: nil)
+                    let audioHoldDurationMs = cameraInstance._cameraSwitchAudioGate.release(
+                        at: completedAt
+                    )
+                    self.recordCameraSwitchMetricsLocked(
+                        cameraInstance,
+                        committed: false,
+                        wasRecording: wasRecordingAtSwitchStart,
+                        configurationDurationMs: configurationDurationMs,
+                        audioHoldDurationMs: audioHoldDurationMs
+                    )
+                    os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                    switchError = self.cameraSwitchFlutterError(
+                        code: "SWITCH_UNSUPPORTED",
+                        message: "New camera does not support the active recording configuration",
+                        stage: "session_preset_rejected",
+                        wasRecording: wasRecordingAtSwitchStart,
+                        configurationDurationMs: configurationDurationMs,
+                        audioHoldDurationMs: audioHoldDurationMs
+                    )
                     return
                 }
 
@@ -1526,6 +1739,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance.previewTexture?.updateForNewCamera(position: newPosition)
                 
                 captureSession.commitConfiguration()
+                let completedAt = ProcessInfo.processInfo.systemUptime
+                let configurationDurationMs = Self.elapsedMilliseconds(
+                    from: configurationStartedAt,
+                    to: completedAt
+                )
 
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
                 if cameraInstance._isRecording, let switchGeneration {
@@ -1538,8 +1756,28 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                     cameraInstance._audioTimeline.markDiscontinuity()
                     cameraInstance._cameraSwitchGenerationPending = switchGeneration
                 }
+                // Release the pre-commit hold only after the generation gate is
+                // armed. Audio therefore remains suppressed until matching
+                // stable video arrives, with no observable gap between gates.
+                let audioHoldDurationMs = cameraInstance._cameraSwitchAudioGate.release(
+                    at: completedAt
+                )
+                self.recordCameraSwitchMetricsLocked(
+                    cameraInstance,
+                    committed: true,
+                    wasRecording: wasRecordingAtSwitchStart,
+                    configurationDurationMs: configurationDurationMs,
+                    audioHoldDurationMs: audioHoldDurationMs
+                )
                 cameraInstance.previewTexture?.completeCameraSwitchStabilization()
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
+
+                switchDiagnostics = self.cameraSwitchDiagnostics(
+                    stage: "committed",
+                    wasRecording: wasRecordingAtSwitchStart,
+                    configurationDurationMs: configurationDurationMs,
+                    audioHoldDurationMs: audioHoldDurationMs
+                )
             }
 
             if let switchError {
@@ -1551,7 +1789,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance.videoInput = videoInput
             
             if let textureId = cameraInstance.textureId {
-                result(cameraInitializationResult(textureId: textureId, captureDimensions: cameraInstance.captureDimensions))
+                result(cameraInitializationResult(
+                    textureId: textureId,
+                    captureDimensions: cameraInstance.captureDimensions,
+                    switchDiagnostics: switchDiagnostics
+                ))
             } else {
                 result(FlutterError(code: "TEXTURE_ERROR", message: "No texture ID available", details: nil))
             }
@@ -1560,14 +1802,96 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         }
     }
 
-    private func cameraInitializationResult(textureId: Int64, captureDimensions: CMVideoDimensions) -> [String: Any] {
-        return [
+    private static func elapsedMilliseconds(
+        from startedAt: TimeInterval,
+        to completedAt: TimeInterval
+    ) -> Int {
+        max(0, Int(((completedAt - startedAt) * 1000).rounded()))
+    }
+
+    private func cameraSwitchDiagnostics(
+        stage: String,
+        wasRecording: Bool,
+        configurationDurationMs: Int,
+        audioHoldDurationMs: Int?
+    ) -> [String: Any] {
+        var diagnostics: [String: Any] = [
+            "native_switch_timeline_schema_version": 2,
+            "native_switch_stage": stage,
+            "native_switch_was_recording": wasRecording,
+            "native_switch_configuration_duration_ms": configurationDurationMs,
+            "native_switch_audio_hold_applied": audioHoldDurationMs != nil
+        ]
+        if let audioHoldDurationMs {
+            diagnostics["native_switch_audio_hold_duration_ms"] = audioHoldDurationMs
+        }
+        return diagnostics
+    }
+
+    private func cameraSwitchFlutterError(
+        code: String,
+        message: String,
+        stage: String,
+        wasRecording: Bool,
+        configurationDurationMs: Int,
+        audioHoldDurationMs: Int?
+    ) -> FlutterError {
+        FlutterError(
+            code: code,
+            message: message,
+            details: cameraSwitchDiagnostics(
+                stage: stage,
+                wasRecording: wasRecording,
+                configurationDurationMs: configurationDurationMs,
+                audioHoldDurationMs: audioHoldDurationMs
+            )
+        )
+    }
+
+    /// Caller holds `recordingLock`. Diagnostics never influence capture state.
+    private func recordCameraSwitchMetricsLocked(
+        _ cameraInstance: CameraInstance,
+        committed: Bool,
+        wasRecording: Bool,
+        configurationDurationMs: Int,
+        audioHoldDurationMs: Int?
+    ) {
+        guard wasRecording else { return }
+        if committed {
+            cameraInstance._cameraSwitchCommittedCount += 1
+        } else {
+            cameraInstance._cameraSwitchRejectedCount += 1
+        }
+        cameraInstance._cameraSwitchConfigurationTotalMs += configurationDurationMs
+        cameraInstance._cameraSwitchConfigurationMaxMs = max(
+            cameraInstance._cameraSwitchConfigurationMaxMs,
+            configurationDurationMs
+        )
+        if let audioHoldDurationMs {
+            cameraInstance._cameraSwitchAudioHoldTotalMs += audioHoldDurationMs
+            cameraInstance._cameraSwitchAudioHoldMaxMs = max(
+                cameraInstance._cameraSwitchAudioHoldMaxMs,
+                audioHoldDurationMs
+            )
+        }
+    }
+
+    private func cameraInitializationResult(
+        textureId: Int64,
+        captureDimensions: CMVideoDimensions,
+        switchDiagnostics: [String: Any]? = nil
+    ) -> [String: Any] {
+        var initializationResult: [String: Any] = [
             "textureId": Int(textureId),
             "previewSize": [
                 "width": Int(captureDimensions.width),
                 "height": Int(captureDimensions.height)
             ]
         ]
+        if let switchDiagnostics {
+            initializationResult["switchDiagnostics"] = switchDiagnostics
+        }
+        return initializationResult
     }
     
     private func stopRecording(call: FlutterMethodCall, result: @escaping FlutterResult) {
@@ -1623,6 +1947,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             let isFirstAudioFrame = cameraInstance._isFirstAudioFrame
             let hadAudioConverter = cameraInstance.audioConverter != nil
             let audioConverterInputFormat = cameraInstance.audioConverterInputFormat
+            let recordingDiagnostics = self.recordingTimelineDiagnosticsLocked(
+                cameraInstance
+            )
             cameraInstance._isRecording = false
             cameraInstance._isPaused = false
             cameraInstance.videoWriterInput = nil
@@ -1639,7 +1966,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 assetWriter.finishWriting {
                     DispatchQueue.main.async {
                         if assetWriter.status == .completed {
-                            result(recordingPath)
+                            if let recordingPath {
+                                result([
+                                    "filePath": recordingPath,
+                                    "diagnostics": recordingDiagnostics
+                                ])
+                            } else {
+                                result(nil)
+                            }
                         } else {
                             let writerError = assetWriter.error
                             let message = writerError?.localizedDescription ?? "Unknown error"
@@ -1764,6 +2098,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             return
         }
 
+        var consumedCameraSwitchBoundary = false
         if let pendingGeneration = cameraInstance._cameraSwitchGenerationPending {
             guard switchGeneration == pendingGeneration else {
                 // This callback passed the preview gate immediately before a
@@ -1772,9 +2107,24 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
+            if cameraInstance._videoTimeline.discontinuityPending {
+                // An invalid timestamp cannot define a shared boundary. Keep
+                // the generation armed so the next valid stable frame does.
+                guard let sharedGap = cameraInstance._videoTimeline
+                    .consumePendingDiscontinuityGap(at: currentTime) else {
+                    os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                    return
+                }
+                cameraInstance._audioTimeline.applyPendingDiscontinuityGap(
+                    sharedGap
+                )
+                cameraInstance._cameraSwitchAudioReleasePending = true
+                consumedCameraSwitchBoundary = true
+            }
             // CameraPreviewTexture drops the configured stabilization frames
-            // before forwarding this callback. Reaching this point on the
-            // video queue establishes the release boundary for both tracks.
+            // before forwarding this callback. Reaching this point with a
+            // valid boundary (or before either track has started) establishes
+            // the release point for both tracks.
             cameraInstance._cameraSwitchGenerationPending = nil
         }
 
@@ -1796,7 +2146,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             cameraInstance._isFirstVideoFrame = false
         }
 
-        if cameraInstance._videoTimeline.consumePendingDiscontinuity(at: currentTime) {
+        if consumedCameraSwitchBoundary ||
+           cameraInstance._videoTimeline.consumePendingDiscontinuity(at: currentTime) {
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
@@ -1816,6 +2167,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         case .dropNonMonotonic(let candidate, let previous):
+            cameraInstance._videoNonMonotonicDropCount += 1
             NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic video PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
@@ -1838,6 +2190,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
         if let adjustedBuffer = adjustedBuffer {
             if !videoInput.append(adjustedBuffer) {
+                cameraInstance._videoAppendFailureCount += 1
                 if let error = cameraInstance.assetWriter?.error {
                     NSLog("%@", "PrettyAwesomeCameraPlugin: Video append failed. Error: \(error.localizedDescription)")
                 } else {
@@ -2018,9 +2371,18 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 return
             }
 
-            // Video owns the post-switch release boundary. Do not let audio
-            // consume its discontinuity until a stable video frame arrives.
-            if cameraInstance._cameraSwitchGenerationPending != nil {
+            // Stop audio at the same pre-configuration boundary as video, then
+            // keep it stopped until stable matching video releases the switch.
+            if cameraInstance._cameraSwitchAudioGate.isHolding ||
+               cameraInstance._cameraSwitchGenerationPending != nil {
+                cameraInstance._cameraSwitchHeldAudioSampleCount += 1
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+
+            if cameraInstance._cameraSwitchAudioReleasePending {
+                cameraInstance._cameraSwitchAudioReleasePending = false
+                cameraInstance._audioTimeline.observeDroppedSample(at: currentTime)
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
@@ -2069,6 +2431,7 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             case .dropNonMonotonic(let candidate, let previous):
+                cameraInstance._audioNonMonotonicDropCount += 1
                 NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic resampled audio PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
@@ -2083,6 +2446,7 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 cameraInstance: cameraInstance
             ) {
                 if !audioInput.append(resampled) {
+                    cameraInstance._audioAppendFailureCount += 1
                     if let error = cameraInstance.assetWriter?.error {
                         NSLog("%@", "PrettyAwesomeCameraPlugin: Resampled audio append failed. Error: \(error.localizedDescription)")
                     }
@@ -2122,9 +2486,18 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             return
         }
 
-        // Video owns the post-switch release boundary. Do not let audio
-        // consume its discontinuity until a stable video frame arrives.
-        if cameraInstance._cameraSwitchGenerationPending != nil {
+        // Stop audio at the same pre-configuration boundary as video, then
+        // keep it stopped until stable matching video releases the switch.
+        if cameraInstance._cameraSwitchAudioGate.isHolding ||
+           cameraInstance._cameraSwitchGenerationPending != nil {
+            cameraInstance._cameraSwitchHeldAudioSampleCount += 1
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
+
+        if cameraInstance._cameraSwitchAudioReleasePending {
+            cameraInstance._cameraSwitchAudioReleasePending = false
+            cameraInstance._audioTimeline.observeDroppedSample(at: currentTime)
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
@@ -2171,6 +2544,7 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         case .dropNonMonotonic(let candidate, let previous):
+            cameraInstance._audioNonMonotonicDropCount += 1
             NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic direct audio PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
@@ -2194,6 +2568,7 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
 
         if let adjustedBuffer = adjustedBuffer {
             if !audioInput.append(adjustedBuffer) {
+                cameraInstance._audioAppendFailureCount += 1
                 if let error = cameraInstance.assetWriter?.error {
                     NSLog("%@", "PrettyAwesomeCameraPlugin: Direct audio append failed. Error: \(error.localizedDescription)")
                 }
@@ -2621,12 +2996,6 @@ class CameraPreviewTexture: NSObject, FlutterTexture, AVCaptureVideoDataOutputSa
         os_unfair_lock_unlock(&stateLock)
     }
 
-    var isDroppingFramesAfterSwitch: Bool {
-        os_unfair_lock_lock(&stateLock)
-        defer { os_unfair_lock_unlock(&stateLock) }
-        return cameraSwitchFrameGate.isDroppingFrames
-    }
-    
     func updateForNewCamera(position: AVCaptureDevice.Position) {
         lensPosition = position
         if let connection = videoDataOutput.connection(with: .video) {
