@@ -1,0 +1,84 @@
+name: iOS Camera Timeline
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ios-camera-timeline.yml"
+      - "ios/**"
+      - "example/ios/**"
+      - "test/ios_recording_timeline_source_test.dart"
+      - "test/ios_recording_stop_diagnostics_source_test.dart"
+      - "pubspec.yaml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-camera-timeline-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ios-camera-timeline:
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: "3.44.3"
+          channel: stable
+          cache: true
+
+      - name: Resolve root dependencies
+        run: flutter pub get
+
+      - name: Resolve example dependencies
+        run: flutter pub get
+        working-directory: example
+
+      - name: Verify iOS timeline source wiring
+        run: >-
+          flutter test
+          test/ios_recording_timeline_source_test.dart
+          test/ios_recording_stop_diagnostics_source_test.dart
+
+      - name: Install example iOS pods
+        run: pod install
+        working-directory: example/ios
+
+      - name: Run native media timeline tests
+        working-directory: example/ios
+        run: |
+          set -euo pipefail
+
+          simulator_id="$(python3 - <<'PY'
+          import json
+          import subprocess
+
+          devices = json.loads(
+              subprocess.check_output(
+                  ["xcrun", "simctl", "list", "devices", "available", "-j"],
+                  text=True,
+              )
+          )["devices"]
+
+          for runtime_devices in reversed(list(devices.values())):
+              for device in runtime_devices:
+                  if device.get("isAvailable") and device["name"].startswith("iPhone"):
+                      print(device["udid"])
+                      raise SystemExit(0)
+
+          raise SystemExit("No available iPhone simulator found")
+          PY
+          )"
+
+          xcrun simctl boot "$simulator_id" 2>/dev/null || true
+          xcrun simctl bootstatus "$simulator_id" -b
+          xcodebuild test \
+            -workspace Runner.xcworkspace \
+            -scheme Runner \
+            -destination "platform=iOS Simulator,id=$simulator_id" \
+            -only-testing:RunnerTests/MediaTimelineStateTests \
+            CODE_SIGNING_ALLOWED=NO

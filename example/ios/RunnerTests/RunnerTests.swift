@@ -54,6 +54,95 @@ final class RecordingAudioSettingsTests: XCTestCase {
   }
 }
 
+final class MediaTimelineStateTests: XCTestCase {
+
+  private func time(_ milliseconds: Int64) -> CMTime {
+    CMTime(value: milliseconds, timescale: 1000)
+  }
+
+  private func appendedTime(
+    _ decision: MediaTimelineAppendDecision,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> CMTime {
+    guard case .append(let adjustedTime) = decision else {
+      XCTFail("Expected an append decision, got \(decision)", file: file, line: line)
+      return .invalid
+    }
+    return adjustedTime
+  }
+
+  func testIndependentTracksAvoidTheSharedTimelineRegression() {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+
+    let previousVideo = appendedTime(video.adjustedTime(for: time(1033)))
+    let previousAudio = appendedTime(audio.adjustedTime(for: time(1000)))
+
+    video.markDiscontinuity()
+    audio.markDiscontinuity()
+
+    XCTAssertTrue(video.consumePendingDiscontinuity(at: time(1200)))
+    XCTAssertTrue(audio.consumePendingDiscontinuity(at: time(1190)))
+
+    let nextVideo = appendedTime(video.adjustedTime(for: time(1233)))
+    let nextAudio = appendedTime(audio.adjustedTime(for: time(1213)))
+
+    XCTAssertGreaterThan(CMTimeCompare(nextVideo, previousVideo), 0)
+    XCTAssertGreaterThan(CMTimeCompare(nextAudio, previousAudio), 0)
+
+    // The removed shared implementation could use audio's 1000 ms PTS as
+    // video's last sample, subtract a 200 ms gap, and generate 1033 ms again.
+    // AVAssetWriterInput rejects that non-monotonic duplicate.
+    let sharedGap = CMTimeSubtract(time(1200), time(1000))
+    let sharedAdjustedVideo = CMTimeSubtract(time(1233), sharedGap)
+    XCTAssertLessThanOrEqual(CMTimeCompare(sharedAdjustedVideo, previousVideo), 0)
+  }
+
+  func testRepeatedDiscontinuitiesRemainMonotonicPerTrack() {
+    var timeline = MediaTimelineState()
+    var previous = appendedTime(timeline.adjustedTime(for: time(1000)))
+
+    for sourceBase in [1400, 1900, 2500, 3200] {
+      timeline.markDiscontinuity()
+      XCTAssertTrue(timeline.consumePendingDiscontinuity(at: time(Int64(sourceBase))))
+      let adjusted = appendedTime(
+        timeline.adjustedTime(for: time(Int64(sourceBase + 33)))
+      )
+      XCTAssertGreaterThan(CMTimeCompare(adjusted, previous), 0)
+      previous = adjusted
+    }
+  }
+
+  func testAudioRouteDropPreservesGapWithoutRetiming() {
+    var audio = MediaTimelineState()
+    XCTAssertEqual(
+      CMTimeCompare(appendedTime(audio.adjustedTime(for: time(1000))), time(1000)),
+      0
+    )
+
+    audio.observeDroppedSample(at: time(1500))
+    let postRoute = appendedTime(audio.adjustedTime(for: time(1523)))
+
+    XCTAssertEqual(CMTimeCompare(postRoute, time(1523)), 0)
+    XCTAssertEqual(CMTimeCompare(audio.timeOffset, .zero), 0)
+  }
+
+  func testNonMonotonicTimestampIsRejectedWithoutAdvancingOutputTimeline() {
+    var timeline = MediaTimelineState()
+    _ = appendedTime(timeline.adjustedTime(for: time(1000)))
+
+    guard case .dropNonMonotonic(let candidate, let previous) =
+      timeline.adjustedTime(for: time(1000)) else {
+      return XCTFail("Expected duplicate PTS to be rejected")
+    }
+    XCTAssertEqual(CMTimeCompare(candidate, previous), 0)
+
+    let recovered = appendedTime(timeline.adjustedTime(for: time(1033)))
+    XCTAssertEqual(CMTimeCompare(recovered, time(1033)), 0)
+  }
+}
+
 // MARK: - AVAssetWriter audio-gap behavior probe
 //
 // PURPOSE

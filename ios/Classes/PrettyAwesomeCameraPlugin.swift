@@ -3,6 +3,76 @@ import UIKit
 import AVFoundation
 import os.lock
 
+enum MediaTimelineAppendDecision {
+    case append(CMTime)
+    case dropInvalidSourceTime
+    case dropNonMonotonic(candidate: CMTime, previous: CMTime)
+}
+
+/// Per-writer-input presentation-time state.
+///
+/// Audio and video are delivered on independent queues and their source PTS
+/// values are not globally ordered. Keeping this state per media track prevents
+/// one track from calculating or consuming the other track's discontinuity.
+struct MediaTimelineState {
+    private(set) var timeOffset: CMTime = .zero
+    private(set) var lastSourceTime: CMTime?
+    private(set) var lastAdjustedTime: CMTime?
+    private(set) var discontinuityPending = false
+
+    mutating func reset() {
+        self = MediaTimelineState()
+    }
+
+    mutating func markDiscontinuity() {
+        guard lastSourceTime != nil else { return }
+        discontinuityPending = true
+    }
+
+    /// Consumes the first valid sample after a pause or camera switch, removes
+    /// that track's source-time gap, and drops the transitional sample.
+    mutating func consumePendingDiscontinuity(at sourceTime: CMTime) -> Bool {
+        guard discontinuityPending else { return false }
+        guard sourceTime.isNumeric else { return true }
+
+        if let lastSourceTime {
+            let gap = CMTimeSubtract(sourceTime, lastSourceTime)
+            if gap.isNumeric && CMTimeCompare(gap, .zero) > 0 {
+                timeOffset = CMTimeAdd(timeOffset, gap)
+            }
+        }
+
+        discontinuityPending = false
+        lastSourceTime = sourceTime
+        return true
+    }
+
+    /// Records a deliberately dropped sample without compressing its gap. Used
+    /// for audio-route transitions where video continues on the original clock.
+    mutating func observeDroppedSample(at sourceTime: CMTime) {
+        guard sourceTime.isNumeric else { return }
+        lastSourceTime = sourceTime
+    }
+
+    /// Returns a track-local adjusted PTS, rejecting a timestamp that would
+    /// violate AVAssetWriterInput's monotonic ordering requirement.
+    mutating func adjustedTime(for sourceTime: CMTime) -> MediaTimelineAppendDecision {
+        guard sourceTime.isNumeric else { return .dropInvalidSourceTime }
+
+        let adjustedTime = CMTimeSubtract(sourceTime, timeOffset)
+        guard adjustedTime.isNumeric else { return .dropInvalidSourceTime }
+
+        lastSourceTime = sourceTime
+        if let previous = lastAdjustedTime,
+           CMTimeCompare(adjustedTime, previous) <= 0 {
+            return .dropNonMonotonic(candidate: adjustedTime, previous: previous)
+        }
+
+        lastAdjustedTime = adjustedTime
+        return .append(adjustedTime)
+    }
+}
+
 public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
     static let targetVideoFrameRate: Int = 30
     // Sanity ceiling for caller-supplied encoder bitrates — AVAssetWriter fails
@@ -60,13 +130,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _isPaused: Bool = false
         fileprivate var _recordingWarmupFramesRemaining: Int = 0
         fileprivate var _hasPrewarmedRecordingPipeline: Bool = false
-        fileprivate var _timeOffset: CMTime = .zero
-        fileprivate var _lastSampleTime: CMTime = .zero
+        fileprivate var _videoTimeline = MediaTimelineState()
+        fileprivate var _audioTimeline = MediaTimelineState()
+        // Keeps audio from consuming its post-switch discontinuity before the
+        // video pipeline has delivered a stable frame from the new camera.
+        fileprivate var _cameraSwitchTimelinePending = false
         fileprivate var _isFirstVideoFrame: Bool = true
         fileprivate var _isFirstAudioFrame: Bool = true
         fileprivate var _sessionStartTime: CMTime = .zero
-        fileprivate var _discontinuityPending: Bool = false
-        fileprivate var _audioDiscontinuityPending: Bool = false
+        fileprivate var _audioRouteDiscontinuityPending: Bool = false
         // Diagnostics-only (NOT used in timestamp math). Tracks the PTS of the last
         // processed audio sample and how many audio route switches occurred so we can
         // log the real audio-only gap size and converter re-prime cadence per switch.
@@ -122,32 +194,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
         }
         
-        var discontinuityPending: Bool {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _discontinuityPending
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _discontinuityPending = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
-        var audioDiscontinuityPending: Bool {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _audioDiscontinuityPending
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _audioDiscontinuityPending = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
         var recordingWarmupFramesRemaining: Int {
             get {
                 os_unfair_lock_lock(&recordingLock)
@@ -170,32 +216,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             set {
                 os_unfair_lock_lock(&recordingLock)
                 _hasPrewarmedRecordingPipeline = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
-        var timeOffset: CMTime {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _timeOffset
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _timeOffset = newValue
-                os_unfair_lock_unlock(&recordingLock)
-            }
-        }
-
-        var lastSampleTime: CMTime {
-            get {
-                os_unfair_lock_lock(&recordingLock)
-                defer { os_unfair_lock_unlock(&recordingLock) }
-                return _lastSampleTime
-            }
-            set {
-                os_unfair_lock_lock(&recordingLock)
-                _lastSampleTime = newValue
                 os_unfair_lock_unlock(&recordingLock)
             }
         }
@@ -888,12 +908,10 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let isRecording = cameraInstance._isRecording
                 var switchCount = 0
                 if isRecording {
-                    // Use audio-specific discontinuity flag — NOT the shared _discontinuityPending.
-                    // Audio route changes only affect the audio pipeline. The video pipeline
-                    // continues uninterrupted at 30fps. If we set the shared flag, video would
-                    // consume it within ~33ms, compute an incorrect tiny gap, and accumulate
-                    // timing drift that eventually corrupts the AVAssetWriter.
-                    cameraInstance._audioDiscontinuityPending = true
+                    // Audio route changes only affect audio. Video continues
+                    // uninterrupted, so this transition must not retime either
+                    // track's media timeline.
+                    cameraInstance._audioRouteDiscontinuityPending = true
                     cameraInstance._audioRouteSwitchCount += 1
                     switchCount = cameraInstance._audioRouteSwitchCount
                     cameraInstance.resetAudioConverterLocked()
@@ -930,7 +948,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 let isRecording = cameraInstance._isRecording
                 if isRecording {
                     affectedRecordingCount += 1
-                    cameraInstance._audioDiscontinuityPending = true
+                    cameraInstance._audioRouteDiscontinuityPending = true
                     cameraInstance.resetAudioConverterLocked()
                 }
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -947,7 +965,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
                 let isRecording = cameraInstance._isRecording
                 if isRecording {
-                    cameraInstance._audioDiscontinuityPending = true
+                    cameraInstance._audioRouteDiscontinuityPending = true
                     cameraInstance.resetAudioConverterLocked()
                 }
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -1097,9 +1115,6 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 NSLog("%@", "PrettyAwesomeCameraPlugin: Started recording. Active microphone: \(deviceName) (Type: \(portType))")
 
                 cameraInstance.isPaused = false
-                cameraInstance.discontinuityPending = false
-                cameraInstance.timeOffset = .zero
-                cameraInstance.lastSampleTime = .zero
                 cameraInstance.isFirstVideoFrame = true
                 cameraInstance.isFirstAudioFrame = true
                 cameraInstance.sessionStartTime = .zero
@@ -1113,6 +1128,10 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
                 // Diagnostics-only counters reset for the new recording.
                 os_unfair_lock_lock(&cameraInstance.recordingLock)
+                cameraInstance._videoTimeline.reset()
+                cameraInstance._audioTimeline.reset()
+                cameraInstance._cameraSwitchTimelinePending = false
+                cameraInstance._audioRouteDiscontinuityPending = false
                 cameraInstance._lastAcceptedAudioSampleTime = .zero
                 cameraInstance._audioRouteSwitchCount = 0
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -1188,8 +1207,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         let isPaused = cameraInstance._isPaused
         let needsSessionRecovery = !(cameraInstance.captureSession?.isRunning ?? false)
         if isPaused && !needsSessionRecovery {
-            if !cameraInstance._isFirstVideoFrame || !cameraInstance._isFirstAudioFrame {
-                cameraInstance._discontinuityPending = true
+            if !cameraInstance._isFirstVideoFrame {
+                cameraInstance._videoTimeline.markDiscontinuity()
+            }
+            if !cameraInstance._isFirstAudioFrame {
+                cameraInstance._audioTimeline.markDiscontinuity()
             }
             cameraInstance._isPaused = false
         }
@@ -1224,10 +1246,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
             os_unfair_lock_lock(&cameraInstance.recordingLock)
             if cameraInstance._isPaused {
-                if !cameraInstance._isFirstVideoFrame || !cameraInstance._isFirstAudioFrame {
-                    cameraInstance._discontinuityPending = true
+                if !cameraInstance._isFirstVideoFrame {
+                    cameraInstance._videoTimeline.markDiscontinuity()
                 }
-                cameraInstance._audioDiscontinuityPending = true
+                if !cameraInstance._isFirstAudioFrame {
+                    cameraInstance._audioTimeline.markDiscontinuity()
+                }
+                cameraInstance._audioRouteDiscontinuityPending = true
                 cameraInstance.resetAudioConverterLocked()
                 cameraInstance._isPaused = false
             }
@@ -1381,9 +1406,16 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             }
             
             sessionQueue.sync {
-                if cameraInstance.isRecording {
-                    cameraInstance.discontinuityPending = true
+                os_unfair_lock_lock(&cameraInstance.recordingLock)
+                if cameraInstance._isRecording {
+                    // Both tracks are suppressed during post-switch
+                    // stabilization. Each must remove its own source-time gap;
+                    // sharing the gap state corrupts AVAssetWriter ordering.
+                    cameraInstance._videoTimeline.markDiscontinuity()
+                    cameraInstance._audioTimeline.markDiscontinuity()
+                    cameraInstance._cameraSwitchTimelinePending = true
                 }
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 
                 cameraInstance.previewTexture?.prepareForCameraSwitch(position: newPosition)
                 captureSession.beginConfiguration()
@@ -1665,6 +1697,13 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             return
         }
 
+        if cameraInstance._cameraSwitchTimelinePending {
+            // CameraPreviewTexture drops the configured stabilization frames
+            // before forwarding this callback. Reaching this point on the
+            // video queue establishes the release boundary for both tracks.
+            cameraInstance._cameraSwitchTimelinePending = false
+        }
+
         if cameraInstance._isFirstVideoFrame {
             if cameraInstance._recordingWarmupFramesRemaining > 0 {
                 cameraInstance._recordingWarmupFramesRemaining -= 1
@@ -1681,20 +1720,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._sessionStartTime = currentTime
             }
             cameraInstance._isFirstVideoFrame = false
-            cameraInstance._lastSampleTime = currentTime
         }
 
-        if cameraInstance._discontinuityPending {
-            let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
-            cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
-            cameraInstance._discontinuityPending = false
-            cameraInstance._lastSampleTime = currentTime
+        if cameraInstance._videoTimeline.consumePendingDiscontinuity(at: currentTime) {
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
-
-        let timeOffset = cameraInstance._timeOffset
-        cameraInstance._lastSampleTime = currentTime
 
         guard videoInput.isReadyForMoreMediaData else {
             NSLog("%@", "PrettyAwesomeCameraPlugin: Video input not ready for media data.")
@@ -1702,7 +1733,19 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             return
         }
 
-        let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
+        let adjustedTime: CMTime
+        switch cameraInstance._videoTimeline.adjustedTime(for: currentTime) {
+        case .append(let time):
+            adjustedTime = time
+        case .dropInvalidSourceTime:
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping video sample with invalid PTS.")
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        case .dropNonMonotonic(let candidate, let previous):
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic video PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
 
         var adjustedBuffer: CMSampleBuffer?
         var timingInfo = CMSampleTimingInfo(
@@ -1901,31 +1944,27 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 return
             }
 
-            // Suppress audio during video stabilization after camera switch
-            if cameraInstance.previewTexture?.isDroppingFramesAfterSwitch ?? false {
+            // Video owns the post-switch release boundary. Do not let audio
+            // consume its discontinuity until a stable video frame arrives.
+            if cameraInstance._cameraSwitchTimelinePending {
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
 
             if cameraInstance._isFirstAudioFrame {
                 cameraInstance._isFirstAudioFrame = false
-                cameraInstance._lastSampleTime = currentTime
                 cameraInstance._lastAcceptedAudioSampleTime = currentTime
             }
 
-            if cameraInstance._discontinuityPending {
-                let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
-                cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
-                cameraInstance._discontinuityPending = false
-                cameraInstance._lastSampleTime = currentTime
+            if cameraInstance._audioTimeline.consumePendingDiscontinuity(at: currentTime) {
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
 
             // Audio-only discontinuity (route change: AirPods connect/disconnect).
-            // Drop this first transitional sample and update _lastSampleTime,
-            // but do NOT modify _timeOffset — the video timeline is unaffected.
-            if cameraInstance._audioDiscontinuityPending {
+            // Drop this first transitional sample without retiming audio; the
+            // video timeline is unaffected and AVAssetWriter preserves the gap.
+            if cameraInstance._audioRouteDiscontinuityPending {
                 // Diagnostics: measure the true audio-only gap (last accepted audio
                 // sample -> first post-route sample). This is the number the proposed
                 // "audioTimeOffset compression" fix would act on. Logging only.
@@ -1934,16 +1973,12 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                     ? CMTimeGetSeconds(CMTimeSubtract(currentTime, cameraInstance._lastAcceptedAudioSampleTime))
                     : -1
                 NSLog("%@", "PrettyAwesomeCameraPlugin: [AUDIO-GAP] path=resampled switch#=\(cameraInstance._audioRouteSwitchCount) gapSeconds=\(gapSeconds) inRate=\(cameraInstance.actualAudioSampleRate) targetRate=\(cameraInstance.recordingAudioSampleRate)")
-                cameraInstance._audioDiscontinuityPending = false
-                cameraInstance._lastSampleTime = currentTime
+                cameraInstance._audioRouteDiscontinuityPending = false
+                cameraInstance._audioTimeline.observeDroppedSample(at: currentTime)
                 cameraInstance._lastAcceptedAudioSampleTime = currentTime
                 os_unfair_lock_unlock(&cameraInstance.recordingLock)
                 return
             }
-
-            let timeOffset = cameraInstance._timeOffset
-            cameraInstance._lastSampleTime = currentTime
-            cameraInstance._lastAcceptedAudioSampleTime = currentTime
 
             guard audioInput.isReadyForMoreMediaData else {
                 NSLog("%@", "PrettyAwesomeCameraPlugin: Resampled audio input not ready for media data.")
@@ -1951,7 +1986,20 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
                 return
             }
 
-            let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
+            let adjustedTime: CMTime
+            switch cameraInstance._audioTimeline.adjustedTime(for: currentTime) {
+            case .append(let time):
+                adjustedTime = time
+            case .dropInvalidSourceTime:
+                NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping resampled audio sample with invalid PTS.")
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            case .dropNonMonotonic(let candidate, let previous):
+                NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic resampled audio PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
+                os_unfair_lock_unlock(&cameraInstance.recordingLock)
+                return
+            }
+            cameraInstance._lastAcceptedAudioSampleTime = currentTime
             
             if let resampled = self.resampleAudioBuffer(
                 sampleBuffer,
@@ -2000,23 +2048,19 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             return
         }
 
-        // Suppress audio during video stabilization after camera switch
-        if cameraInstance.previewTexture?.isDroppingFramesAfterSwitch ?? false {
+        // Video owns the post-switch release boundary. Do not let audio
+        // consume its discontinuity until a stable video frame arrives.
+        if cameraInstance._cameraSwitchTimelinePending {
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
 
         if cameraInstance._isFirstAudioFrame {
             cameraInstance._isFirstAudioFrame = false
-            cameraInstance._lastSampleTime = currentTime
             cameraInstance._lastAcceptedAudioSampleTime = currentTime
         }
 
-        if cameraInstance._discontinuityPending {
-            let gap = CMTimeSubtract(currentTime, cameraInstance._lastSampleTime)
-            cameraInstance._timeOffset = CMTimeAdd(cameraInstance._timeOffset, gap)
-            cameraInstance._discontinuityPending = false
-            cameraInstance._lastSampleTime = currentTime
+        if cameraInstance._audioTimeline.consumePendingDiscontinuity(at: currentTime) {
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
@@ -2024,23 +2068,19 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
         // Audio-only discontinuity can also occur when the route changes but
         // the sample format stays compatible with the writer. Drop the first
         // transitional sample here too, not just in the resampling branch.
-        if cameraInstance._audioDiscontinuityPending {
+        if cameraInstance._audioRouteDiscontinuityPending {
             // Diagnostics: measure the true audio-only gap (logging only).
             let hadPriorAudio = cameraInstance._lastAcceptedAudioSampleTime != .zero
             let gapSeconds = hadPriorAudio
                 ? CMTimeGetSeconds(CMTimeSubtract(currentTime, cameraInstance._lastAcceptedAudioSampleTime))
                 : -1
             NSLog("%@", "PrettyAwesomeCameraPlugin: [AUDIO-GAP] path=direct switch#=\(cameraInstance._audioRouteSwitchCount) gapSeconds=\(gapSeconds) inRate=\(cameraInstance.actualAudioSampleRate) targetRate=\(cameraInstance.recordingAudioSampleRate)")
-            cameraInstance._audioDiscontinuityPending = false
-            cameraInstance._lastSampleTime = currentTime
+            cameraInstance._audioRouteDiscontinuityPending = false
+            cameraInstance._audioTimeline.observeDroppedSample(at: currentTime)
             cameraInstance._lastAcceptedAudioSampleTime = currentTime
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
-
-        let timeOffset = cameraInstance._timeOffset
-        cameraInstance._lastSampleTime = currentTime
-        cameraInstance._lastAcceptedAudioSampleTime = currentTime
 
         guard audioInput.isReadyForMoreMediaData else {
             NSLog("%@", "PrettyAwesomeCameraPlugin: Direct audio input not ready for media data.")
@@ -2048,7 +2088,20 @@ extension PrettyAwesomeCameraPlugin: AVCaptureAudioDataOutputSampleBufferDelegat
             return
         }
 
-        let adjustedTime = CMTimeSubtract(currentTime, timeOffset)
+        let adjustedTime: CMTime
+        switch cameraInstance._audioTimeline.adjustedTime(for: currentTime) {
+        case .append(let time):
+            adjustedTime = time
+        case .dropInvalidSourceTime:
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping direct audio sample with invalid PTS.")
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        case .dropNonMonotonic(let candidate, let previous):
+            NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic direct audio PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
+            os_unfair_lock_unlock(&cameraInstance.recordingLock)
+            return
+        }
+        cameraInstance._lastAcceptedAudioSampleTime = currentTime
 
         var adjustedBuffer: CMSampleBuffer?
         var timingInfo = CMSampleTimingInfo(
