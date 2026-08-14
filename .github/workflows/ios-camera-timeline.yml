@@ -81,4 +81,5 @@ jobs:
             -scheme Runner \
             -destination "platform=iOS Simulator,id=$simulator_id" \
             -only-testing:RunnerTests/MediaTimelineStateTests \
+            -only-testing:RunnerTests/CameraSwitchFrameGateTests \
             CODE_SIGNING_ALLOWED=NO

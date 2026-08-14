@@ -143,6 +143,61 @@ final class MediaTimelineStateTests: XCTestCase {
   }
 }
 
+final class CameraSwitchFrameGateTests: XCTestCase {
+
+  func testReconfigurationDropsDoNotConsumePostSwitchStabilizationBudget() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    for _ in 0..<100 {
+      XCTAssertTrue(gate.shouldDropFrame())
+    }
+
+    gate.complete(stabilizationFrameCount: 3)
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertFalse(gate.shouldDropFrame())
+    XCTAssertFalse(gate.isDroppingFrames)
+  }
+
+  func testRejectedSwitchReleasesOldCameraWithoutPostSwitchDrops() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    XCTAssertTrue(gate.shouldDropFrame())
+
+    gate.cancel()
+    XCTAssertEqual(gate.generation, 0)
+    XCTAssertFalse(gate.shouldDropFrame())
+    XCTAssertFalse(gate.isDroppingFrames)
+  }
+
+  func testSuccessfulPreparationAdvancesTheCallbackGeneration() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    gate.complete(stabilizationFrameCount: 0)
+    XCTAssertEqual(gate.prepare(), 2)
+    gate.complete(stabilizationFrameCount: 0)
+    XCTAssertEqual(gate.generation, 2)
+  }
+
+  func testRejectedRapidSwitchRestoresPriorPendingGeneration() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    gate.complete(stabilizationFrameCount: 0)
+    XCTAssertEqual(gate.generation, 1)
+
+    XCTAssertEqual(gate.prepare(), 2)
+    gate.cancel()
+
+    XCTAssertEqual(gate.generation, 1)
+    XCTAssertFalse(gate.shouldDropFrame())
+  }
+}
+
 // MARK: - AVAssetWriter audio-gap behavior probe
 //
 // PURPOSE

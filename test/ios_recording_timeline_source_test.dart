@@ -20,7 +20,7 @@ void main() {
       expect(source, isNot(contains('fileprivate var _discontinuityPending')));
     });
 
-    test('camera switch arms both tracks and waits for stable video', () {
+    test('camera switch arms timelines only after successful commit', () {
       final switchStart = source.indexOf('private func switchCamera(');
       final stopStart = source.indexOf(
         'private func stopRecording(',
@@ -30,6 +30,36 @@ void main() {
       expect(stopStart, greaterThan(switchStart));
 
       final switchSource = source.substring(switchStart, stopStart);
+
+      final prepareIndex = switchSource.indexOf(
+        'cameraInstance.previewTexture?.prepareForCameraSwitch',
+      );
+      final beginConfigurationIndex = switchSource.indexOf(
+        'captureSession.beginConfiguration()',
+      );
+      final successfulCommitIndex = switchSource.lastIndexOf(
+        'captureSession.commitConfiguration()',
+      );
+      final videoTimelineIndex = switchSource.indexOf(
+        'cameraInstance._videoTimeline.markDiscontinuity()',
+      );
+      final audioTimelineIndex = switchSource.indexOf(
+        'cameraInstance._audioTimeline.markDiscontinuity()',
+      );
+      final pendingIndex = switchSource.indexOf(
+        'cameraInstance._cameraSwitchGenerationPending = switchGeneration',
+      );
+      final releaseIndex = switchSource.indexOf(
+        'cameraInstance.previewTexture?.completeCameraSwitchStabilization()',
+      );
+
+      expect(prepareIndex, greaterThanOrEqualTo(0));
+      expect(beginConfigurationIndex, greaterThan(prepareIndex));
+      expect(successfulCommitIndex, greaterThan(beginConfigurationIndex));
+      expect(videoTimelineIndex, greaterThan(successfulCommitIndex));
+      expect(audioTimelineIndex, greaterThan(successfulCommitIndex));
+      expect(pendingIndex, greaterThan(successfulCommitIndex));
+      expect(releaseIndex, greaterThan(pendingIndex));
       expect(
         switchSource,
         contains('cameraInstance._videoTimeline.markDiscontinuity()'),
@@ -40,7 +70,14 @@ void main() {
       );
       expect(
         switchSource,
-        contains('cameraInstance._cameraSwitchTimelinePending = true'),
+        contains(
+          'cameraInstance._cameraSwitchGenerationPending = switchGeneration',
+        ),
+      );
+      expect(
+        'cameraInstance.previewTexture?.cancelCameraSwitchStabilization()'
+            .allMatches(switchSource),
+        hasLength(2),
       );
 
       final videoStart = source.indexOf(
@@ -52,7 +89,11 @@ void main() {
       final videoSource = source.substring(videoStart, audioExtension);
       expect(
         videoSource,
-        contains('cameraInstance._cameraSwitchTimelinePending = false'),
+        contains('cameraInstance._cameraSwitchGenerationPending = nil'),
+      );
+      expect(
+        videoSource,
+        contains('guard switchGeneration == pendingGeneration'),
       );
       expect(
         videoSource,
@@ -72,7 +113,7 @@ void main() {
         hasLength(2),
       );
       expect(
-        'if cameraInstance._cameraSwitchTimelinePending'.allMatches(
+        'if cameraInstance._cameraSwitchGenerationPending != nil'.allMatches(
           audioSource,
         ),
         hasLength(2),
