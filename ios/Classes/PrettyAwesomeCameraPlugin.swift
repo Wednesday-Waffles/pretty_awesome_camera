@@ -257,6 +257,12 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _cameraSwitchAudioHoldTotalMs = 0
         fileprivate var _cameraSwitchAudioHoldMaxMs = 0
         fileprivate var _cameraSwitchHeldAudioSampleCount = 0
+        // Wall-clock time removed from the media timeline by camera-switch
+        // boundaries (the shared video-derived gap applied to both tracks).
+        // Pause compression is excluded on purpose: the client's recording
+        // timer already stops during pauses, so expected-duration math only
+        // needs the switch-attributed portion.
+        fileprivate var _cameraSwitchTimelineCompressionMs = 0
         fileprivate var _videoNonMonotonicDropCount = 0
         fileprivate var _audioNonMonotonicDropCount = 0
         fileprivate var _videoAppendFailureCount = 0
@@ -894,6 +900,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             "native_camera_switch_audio_hold_total_ms": cameraInstance._cameraSwitchAudioHoldTotalMs,
             "native_camera_switch_audio_hold_max_ms": cameraInstance._cameraSwitchAudioHoldMaxMs,
             "native_camera_switch_held_audio_sample_count": cameraInstance._cameraSwitchHeldAudioSampleCount,
+            "native_camera_switch_timeline_compression_ms": cameraInstance._cameraSwitchTimelineCompressionMs,
             "native_camera_switch_audio_gate_active_at_stop": cameraInstance._cameraSwitchAudioGate.isHolding,
             "native_camera_switch_audio_release_pending_at_stop": cameraInstance._cameraSwitchAudioReleasePending,
             "native_camera_switch_generation_pending_at_stop": cameraInstance._cameraSwitchGenerationPending != nil,
@@ -1333,6 +1340,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._cameraSwitchAudioHoldTotalMs = 0
                 cameraInstance._cameraSwitchAudioHoldMaxMs = 0
                 cameraInstance._cameraSwitchHeldAudioSampleCount = 0
+                cameraInstance._cameraSwitchTimelineCompressionMs = 0
                 cameraInstance._videoNonMonotonicDropCount = 0
                 cameraInstance._audioNonMonotonicDropCount = 0
                 cameraInstance._videoAppendFailureCount = 0
@@ -2118,6 +2126,8 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._audioTimeline.applyPendingDiscontinuityGap(
                     sharedGap
                 )
+                cameraInstance._cameraSwitchTimelineCompressionMs +=
+                    Self.timeMilliseconds(sharedGap) ?? 0
                 cameraInstance._cameraSwitchAudioReleasePending = true
                 consumedCameraSwitchBoundary = true
             }

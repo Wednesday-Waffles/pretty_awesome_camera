@@ -401,6 +401,86 @@ final class CameraSwitchTimelineSynchronizationTests: XCTestCase {
       )
     }
   }
+
+  /// Repeated pause/resume cycles quantize each track's boundary to its own
+  /// callback grid, so the cross-track offset delta is a bounded random walk —
+  /// at most one video frame plus one audio buffer per cycle — never a
+  /// systematic drift. This is the acceptance model behind the QA rule that a
+  /// multi-pause take may legitimately exceed the single-pause 40 ms figure.
+  func testRepeatedPauseResumeCyclesKeepOffsetDeltaBoundedPerCycle() {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+    let videoInterval: Int64 = 33
+    let audioInterval: Int64 = 23
+    let perCycleBoundMs = Double(videoInterval + audioInterval)
+
+    var previousDeltaMs = 0.0
+    var previousVideo: CMTime?
+    var previousAudio: CMTime?
+    var wallClock: Int64 = 1_000
+
+    for cycle in 1...10 {
+      let lastVideoBeforePause = floorToGrid(wallClock, interval: videoInterval)
+      let lastAudioBeforePause = floorToGrid(wallClock, interval: audioInterval)
+      let pausedVideo = appendedTime(
+        video.adjustedTime(for: time(lastVideoBeforePause))
+      )
+      let pausedAudio = appendedTime(
+        audio.adjustedTime(for: time(lastAudioBeforePause))
+      )
+      if let previousVideo {
+        XCTAssertGreaterThan(CMTimeCompare(pausedVideo, previousVideo), 0)
+      }
+      if let previousAudio {
+        XCTAssertGreaterThan(CMTimeCompare(pausedAudio, previousAudio), 0)
+      }
+
+      video.markDiscontinuity()
+      audio.markDiscontinuity()
+
+      // Vary the pause length off both grids so every cycle exercises a
+      // different quantization phase.
+      let resumeAt = wallClock + 700 + Int64(cycle) * 137
+      XCTAssertTrue(
+        video.consumePendingDiscontinuity(
+          at: time(ceilToGrid(resumeAt, interval: videoInterval))
+        )
+      )
+      XCTAssertTrue(
+        audio.consumePendingDiscontinuity(
+          at: time(ceilToGrid(resumeAt, interval: audioInterval))
+        )
+      )
+
+      let deltaMs =
+        CMTimeGetSeconds(CMTimeSubtract(audio.timeOffset, video.timeOffset))
+        * 1_000
+      XCTAssertLessThanOrEqual(
+        abs(deltaMs - previousDeltaMs),
+        perCycleBoundMs,
+        "cycle \(cycle) added more than one grid quantum of divergence"
+      )
+      XCTAssertLessThanOrEqual(
+        abs(deltaMs),
+        perCycleBoundMs * Double(cycle),
+        "cumulative divergence exceeded the per-cycle bound after \(cycle) cycles"
+      )
+      previousDeltaMs = deltaMs
+
+      let resumedVideoSource =
+        ceilToGrid(resumeAt, interval: videoInterval) + videoInterval
+      let resumedAudioSource =
+        ceilToGrid(resumeAt, interval: audioInterval) + audioInterval
+      previousVideo = appendedTime(
+        video.adjustedTime(for: time(resumedVideoSource))
+      )
+      previousAudio = appendedTime(
+        audio.adjustedTime(for: time(resumedAudioSource))
+      )
+
+      wallClock = resumeAt + 1_000
+    }
+  }
 }
 
 final class CameraSwitchAssetWriterSynchronizationTests: XCTestCase {

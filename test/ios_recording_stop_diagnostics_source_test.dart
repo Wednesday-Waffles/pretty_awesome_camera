@@ -50,6 +50,10 @@ void main() {
       expect(source, contains('"native_under_err_domain"'));
       expect(source, contains('"native_under_err_code"'));
       expect(source, contains('"native_camera_switch_audio_hold_total_ms"'));
+      expect(
+        source,
+        contains('"native_camera_switch_timeline_compression_ms"'),
+      );
       expect(source, contains('"native_timeline_offset_delta_ms"'));
       expect(source, contains('"native_av_last_pts_delta_ms"'));
       expect(source, contains('"native_video_append_failure_count"'));

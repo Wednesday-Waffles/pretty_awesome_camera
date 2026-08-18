@@ -127,6 +127,19 @@ void main() {
       );
       expect(sharedGapIndex, greaterThanOrEqualTo(0));
       expect(pendingClearIndex, greaterThan(sharedGapIndex));
+
+      // The switch-attributed compression counter must accumulate exactly at
+      // the shared-gap release so the client can reconcile wall-clock
+      // recording time against the compressed media timeline.
+      final compressionAccumulateIndex = videoSource.indexOf(
+        'cameraInstance._cameraSwitchTimelineCompressionMs +=',
+      );
+      expect(compressionAccumulateIndex, greaterThan(sharedGapIndex));
+      expect(compressionAccumulateIndex, lessThan(pendingClearIndex));
+      expect(
+        source,
+        contains('cameraInstance._cameraSwitchTimelineCompressionMs = 0'),
+      );
     });
 
     test('both audio paths use only the audio timeline', () {
