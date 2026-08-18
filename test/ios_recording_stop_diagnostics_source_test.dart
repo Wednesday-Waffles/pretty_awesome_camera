@@ -54,6 +54,7 @@ void main() {
         source,
         contains('"native_camera_switch_timeline_compression_ms"'),
       );
+      expect(source, contains('"native_camera_switch_paused_overlap_ms"'));
       expect(source, contains('"native_timeline_offset_delta_ms"'));
       expect(source, contains('"native_av_last_pts_delta_ms"'));
       expect(source, contains('"native_video_append_failure_count"'));

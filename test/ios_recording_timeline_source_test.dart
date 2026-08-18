@@ -136,9 +136,20 @@ void main() {
       );
       expect(compressionAccumulateIndex, greaterThan(sharedGapIndex));
       expect(compressionAccumulateIndex, lessThan(pendingClearIndex));
+      // The credit must be active-recording time only: pause spans folded
+      // into a switch gap (flip while paused) are excluded, because the
+      // client's recording timer already stops during pauses.
+      expect(
+        videoSource,
+        contains('max(0, sharedGapMs - pausedOverlapMs)'),
+      );
       expect(
         source,
         contains('cameraInstance._cameraSwitchTimelineCompressionMs = 0'),
+      );
+      expect(
+        source,
+        contains('cameraInstance._cameraSwitchPausedOverlapMs = 0'),
       );
     });
 

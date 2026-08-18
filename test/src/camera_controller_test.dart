@@ -325,6 +325,43 @@ void main() {
     });
   });
 
+  test(
+    'stop diagnostics are readable when CameraVideoRecordedState is emitted',
+    () async {
+      platform.recordingDiagnostics = const {
+        'native_camera_switch_timeline_compression_ms': 9566,
+      };
+      final controller = CameraController(
+        description: description,
+        availableCameras: platform.availableCameras,
+        platform: platform,
+      );
+
+      await controller.prewarmUp();
+      await controller.startRecording();
+
+      // App consumers deliver the recorded path synchronously from this
+      // value notification — before their own awaited stopRecording()
+      // continuation runs — so the diagnostics contract must already be
+      // satisfied at emission time.
+      Map<String, Object?>? diagnosticsAtEmission;
+      var sawRecordedState = false;
+      controller.addListener(() {
+        if (controller.value is CameraVideoRecordedState && !sawRecordedState) {
+          sawRecordedState = true;
+          diagnosticsAtEmission = controller.lastRecordingDiagnostics;
+        }
+      });
+
+      await controller.stopRecording();
+
+      expect(sawRecordedState, isTrue);
+      expect(diagnosticsAtEmission, {
+        'native_camera_switch_timeline_compression_ms': 9566,
+      });
+    },
+  );
+
   test('switch camera updates texture and returns to recording', () async {
     final controller = CameraController(
       description: description,

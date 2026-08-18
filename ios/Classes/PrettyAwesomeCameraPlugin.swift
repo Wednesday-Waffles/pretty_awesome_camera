@@ -259,10 +259,18 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         fileprivate var _cameraSwitchHeldAudioSampleCount = 0
         // Wall-clock time removed from the media timeline by camera-switch
         // boundaries (the shared video-derived gap applied to both tracks).
-        // Pause compression is excluded on purpose: the client's recording
-        // timer already stops during pauses, so expected-duration math only
-        // needs the switch-attributed portion.
+        // Pause time is excluded on purpose — including spans folded into a
+        // switch gap by a flip-while-paused: the client's recording timer
+        // already stops during pauses, so expected-duration math only needs
+        // the active-recording portion of each switch gap.
         fileprivate var _cameraSwitchTimelineCompressionMs = 0
+        // Paused time that overlapped switch gaps and was excluded from the
+        // compression credit above; emitted for diagnosis of paused flips.
+        fileprivate var _cameraSwitchPausedOverlapMs = 0
+        // Source PTS ride the host clock, so pause spans measured on it are
+        // directly comparable to video-timeline gaps.
+        fileprivate var _pauseBeganHostTime: CMTime?
+        fileprivate var _pausedMsSinceLastVideoTimelineAdvance = 0
         fileprivate var _videoNonMonotonicDropCount = 0
         fileprivate var _audioNonMonotonicDropCount = 0
         fileprivate var _videoAppendFailureCount = 0
@@ -873,6 +881,19 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         return Int((seconds * 1000).rounded())
     }
 
+    /// Caller holds `recordingLock`. Folds a completed pause span into the
+    /// counter that keeps paused time out of camera-switch compression: the
+    /// recording timer on the Dart side stops during pauses, so a pause span
+    /// folded into a switch gap (flip while paused) must not be credited.
+    private func accumulatePausedSpanLocked(_ cameraInstance: CameraInstance) {
+        guard let pauseBegan = cameraInstance._pauseBeganHostTime else { return }
+        cameraInstance._pauseBeganHostTime = nil
+        let pausedMs = Self.timeMilliseconds(
+            CMTimeSubtract(CMClockGetTime(CMClockGetHostTimeClock()), pauseBegan)
+        ) ?? 0
+        cameraInstance._pausedMsSinceLastVideoTimelineAdvance += max(0, pausedMs)
+    }
+
     /// Caller holds `recordingLock`. Values are diagnostics-only and use
     /// low-cardinality numeric/boolean fields suitable for operational telemetry.
     private func recordingTimelineDiagnosticsLocked(
@@ -901,6 +922,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             "native_camera_switch_audio_hold_max_ms": cameraInstance._cameraSwitchAudioHoldMaxMs,
             "native_camera_switch_held_audio_sample_count": cameraInstance._cameraSwitchHeldAudioSampleCount,
             "native_camera_switch_timeline_compression_ms": cameraInstance._cameraSwitchTimelineCompressionMs,
+            "native_camera_switch_paused_overlap_ms": cameraInstance._cameraSwitchPausedOverlapMs,
             "native_camera_switch_audio_gate_active_at_stop": cameraInstance._cameraSwitchAudioGate.isHolding,
             "native_camera_switch_audio_release_pending_at_stop": cameraInstance._cameraSwitchAudioReleasePending,
             "native_camera_switch_generation_pending_at_stop": cameraInstance._cameraSwitchGenerationPending != nil,
@@ -1341,6 +1363,9 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._cameraSwitchAudioHoldMaxMs = 0
                 cameraInstance._cameraSwitchHeldAudioSampleCount = 0
                 cameraInstance._cameraSwitchTimelineCompressionMs = 0
+                cameraInstance._cameraSwitchPausedOverlapMs = 0
+                cameraInstance._pauseBeganHostTime = nil
+                cameraInstance._pausedMsSinceLastVideoTimelineAdvance = 0
                 cameraInstance._videoNonMonotonicDropCount = 0
                 cameraInstance._audioNonMonotonicDropCount = 0
                 cameraInstance._videoAppendFailureCount = 0
@@ -1391,6 +1416,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         os_unfair_lock_lock(&cameraInstance.recordingLock)
         if !cameraInstance._isPaused {
             cameraInstance._isPaused = true
+            cameraInstance._pauseBeganHostTime = CMClockGetTime(CMClockGetHostTimeClock())
         }
         os_unfair_lock_unlock(&cameraInstance.recordingLock)
         
@@ -1427,6 +1453,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
             if !cameraInstance._isFirstAudioFrame {
                 cameraInstance._audioTimeline.markDiscontinuity()
             }
+            accumulatePausedSpanLocked(cameraInstance)
             cameraInstance._isPaused = false
         }
         os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -1468,6 +1495,7 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 }
                 cameraInstance._audioRouteDiscontinuityPending = true
                 cameraInstance.resetAudioConverterLocked()
+                self.accumulatePausedSpanLocked(cameraInstance)
                 cameraInstance._isPaused = false
             }
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
@@ -2126,8 +2154,15 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
                 cameraInstance._audioTimeline.applyPendingDiscontinuityGap(
                     sharedGap
                 )
+                let sharedGapMs = Self.timeMilliseconds(sharedGap) ?? 0
+                let pausedOverlapMs = min(
+                    sharedGapMs,
+                    cameraInstance._pausedMsSinceLastVideoTimelineAdvance
+                )
                 cameraInstance._cameraSwitchTimelineCompressionMs +=
-                    Self.timeMilliseconds(sharedGap) ?? 0
+                    max(0, sharedGapMs - pausedOverlapMs)
+                cameraInstance._cameraSwitchPausedOverlapMs += max(0, pausedOverlapMs)
+                cameraInstance._pausedMsSinceLastVideoTimelineAdvance = 0
                 cameraInstance._cameraSwitchAudioReleasePending = true
                 consumedCameraSwitchBoundary = true
             }
@@ -2158,6 +2193,11 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
 
         if consumedCameraSwitchBoundary ||
            cameraInstance._videoTimeline.consumePendingDiscontinuity(at: currentTime) {
+            // The video timeline advanced past any prior pause span (an
+            // invalid PTS keeps the boundary armed and advances nothing).
+            if currentTime.isNumeric {
+                cameraInstance._pausedMsSinceLastVideoTimelineAdvance = 0
+            }
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         }
@@ -2172,12 +2212,14 @@ public class PrettyAwesomeCameraPlugin: NSObject, FlutterPlugin {
         switch cameraInstance._videoTimeline.adjustedTime(for: currentTime) {
         case .append(let time):
             adjustedTime = time
+            cameraInstance._pausedMsSinceLastVideoTimelineAdvance = 0
         case .dropInvalidSourceTime:
             NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping video sample with invalid PTS.")
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
         case .dropNonMonotonic(let candidate, let previous):
             cameraInstance._videoNonMonotonicDropCount += 1
+            cameraInstance._pausedMsSinceLastVideoTimelineAdvance = 0
             NSLog("%@", "PrettyAwesomeCameraPlugin: Dropping non-monotonic video PTS. candidate=\(CMTimeGetSeconds(candidate)) previous=\(CMTimeGetSeconds(previous))")
             os_unfair_lock_unlock(&cameraInstance.recordingLock)
             return
