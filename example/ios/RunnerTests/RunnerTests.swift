@@ -54,6 +54,740 @@ final class RecordingAudioSettingsTests: XCTestCase {
   }
 }
 
+final class MediaTimelineStateTests: XCTestCase {
+
+  private func time(_ milliseconds: Int64) -> CMTime {
+    CMTime(value: milliseconds, timescale: 1000)
+  }
+
+  private func appendedTime(
+    _ decision: MediaTimelineAppendDecision,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> CMTime {
+    guard case .append(let adjustedTime) = decision else {
+      XCTFail("Expected an append decision, got \(decision)", file: file, line: line)
+      return .invalid
+    }
+    return adjustedTime
+  }
+
+  func testIndependentTracksAvoidTheSharedTimelineRegression() {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+
+    let previousVideo = appendedTime(video.adjustedTime(for: time(1033)))
+    let previousAudio = appendedTime(audio.adjustedTime(for: time(1000)))
+
+    video.markDiscontinuity()
+    audio.markDiscontinuity()
+
+    XCTAssertTrue(video.consumePendingDiscontinuity(at: time(1200)))
+    XCTAssertTrue(audio.consumePendingDiscontinuity(at: time(1190)))
+
+    let nextVideo = appendedTime(video.adjustedTime(for: time(1233)))
+    let nextAudio = appendedTime(audio.adjustedTime(for: time(1213)))
+
+    XCTAssertGreaterThan(CMTimeCompare(nextVideo, previousVideo), 0)
+    XCTAssertGreaterThan(CMTimeCompare(nextAudio, previousAudio), 0)
+
+    // The removed shared implementation could use audio's 1000 ms PTS as
+    // video's last sample, subtract a 200 ms gap, and generate 1033 ms again.
+    // AVAssetWriterInput rejects that non-monotonic duplicate.
+    let sharedGap = CMTimeSubtract(time(1200), time(1000))
+    let sharedAdjustedVideo = CMTimeSubtract(time(1233), sharedGap)
+    XCTAssertLessThanOrEqual(CMTimeCompare(sharedAdjustedVideo, previousVideo), 0)
+  }
+
+  func testRepeatedDiscontinuitiesRemainMonotonicPerTrack() {
+    var timeline = MediaTimelineState()
+    var previous = appendedTime(timeline.adjustedTime(for: time(1000)))
+
+    for sourceBase in [1400, 1900, 2500, 3200] {
+      timeline.markDiscontinuity()
+      XCTAssertTrue(timeline.consumePendingDiscontinuity(at: time(Int64(sourceBase))))
+      let adjusted = appendedTime(
+        timeline.adjustedTime(for: time(Int64(sourceBase + 33)))
+      )
+      XCTAssertGreaterThan(CMTimeCompare(adjusted, previous), 0)
+      previous = adjusted
+    }
+  }
+
+  func testAudioRouteDropPreservesGapWithoutRetiming() {
+    var audio = MediaTimelineState()
+    XCTAssertEqual(
+      CMTimeCompare(appendedTime(audio.adjustedTime(for: time(1000))), time(1000)),
+      0
+    )
+
+    audio.observeDroppedSample(at: time(1500))
+    let postRoute = appendedTime(audio.adjustedTime(for: time(1523)))
+
+    XCTAssertEqual(CMTimeCompare(postRoute, time(1523)), 0)
+    XCTAssertEqual(CMTimeCompare(audio.timeOffset, .zero), 0)
+  }
+
+  func testNonMonotonicTimestampIsRejectedWithoutAdvancingOutputTimeline() throws {
+    var timeline = MediaTimelineState()
+    _ = appendedTime(timeline.adjustedTime(for: time(1000)))
+
+    guard case .dropNonMonotonic(let candidate, let previous) =
+      timeline.adjustedTime(for: time(1000)) else {
+      return XCTFail("Expected duplicate PTS to be rejected")
+    }
+    XCTAssertEqual(CMTimeCompare(candidate, previous), 0)
+    XCTAssertEqual(CMTimeCompare(try XCTUnwrap(timeline.lastSourceTime), time(1000)), 0)
+
+    let recovered = appendedTime(timeline.adjustedTime(for: time(1033)))
+    XCTAssertEqual(CMTimeCompare(recovered, time(1033)), 0)
+  }
+}
+
+final class CameraSwitchFrameGateTests: XCTestCase {
+
+  func testReconfigurationDropsDoNotConsumePostSwitchStabilizationBudget() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    for _ in 0..<100 {
+      XCTAssertTrue(gate.shouldDropFrame())
+    }
+
+    gate.complete(stabilizationFrameCount: 3)
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertFalse(gate.shouldDropFrame())
+    XCTAssertFalse(gate.isDroppingFrames)
+  }
+
+  func testRejectedSwitchReleasesOldCameraWithoutPostSwitchDrops() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    XCTAssertTrue(gate.shouldDropFrame())
+
+    gate.cancel()
+    XCTAssertEqual(gate.generation, 0)
+    XCTAssertFalse(gate.shouldDropFrame())
+    XCTAssertFalse(gate.isDroppingFrames)
+  }
+
+  func testSuccessfulPreparationAdvancesTheCallbackGeneration() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    gate.complete(stabilizationFrameCount: 0)
+    XCTAssertEqual(gate.prepare(), 2)
+    gate.complete(stabilizationFrameCount: 0)
+    XCTAssertEqual(gate.generation, 2)
+  }
+
+  func testRejectedRapidSwitchRestoresPriorPendingGeneration() {
+    var gate = CameraSwitchFrameGate()
+
+    XCTAssertEqual(gate.prepare(), 1)
+    gate.complete(stabilizationFrameCount: 3)
+    XCTAssertEqual(gate.generation, 1)
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertEqual(gate.stabilizationFramesRemaining, 2)
+
+    XCTAssertEqual(gate.prepare(), 2)
+    gate.cancel()
+
+    XCTAssertEqual(gate.generation, 1)
+    XCTAssertEqual(gate.stabilizationFramesRemaining, 2)
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertTrue(gate.shouldDropFrame())
+    XCTAssertFalse(gate.shouldDropFrame())
+  }
+}
+
+final class CameraSwitchAudioGateTests: XCTestCase {
+
+  func testGateMeasuresConfigurationHoldAndResetsOnCommit() {
+    var gate = CameraSwitchAudioGate()
+
+    gate.begin(at: 10.0)
+    XCTAssertTrue(gate.isHolding)
+    XCTAssertEqual(gate.release(at: 10.120), 120)
+    XCTAssertFalse(gate.isHolding)
+    XCTAssertNil(gate.release(at: 10.200))
+  }
+
+  func testRepeatedBeginDoesNotMoveTheOriginalBoundary() {
+    var gate = CameraSwitchAudioGate()
+
+    gate.begin(at: 20.0)
+    gate.begin(at: 20.080)
+
+    XCTAssertEqual(gate.release(at: 20.150), 150)
+  }
+
+  func testRejectedSwitchReleaseCannotStrandTheNextSwitch() {
+    var gate = CameraSwitchAudioGate()
+
+    gate.begin(at: 30.0)
+    XCTAssertEqual(gate.release(at: 30.040), 40)
+    gate.begin(at: 31.0)
+
+    XCTAssertTrue(gate.isHolding)
+    XCTAssertEqual(gate.release(at: 31.090), 90)
+    XCTAssertFalse(gate.isHolding)
+  }
+}
+
+final class CameraSwitchTimelineSynchronizationTests: XCTestCase {
+
+  private func time(_ milliseconds: Int64) -> CMTime {
+    CMTime(value: milliseconds, timescale: 1000)
+  }
+
+  private func appendedTime(
+    _ decision: MediaTimelineAppendDecision,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) -> CMTime {
+    guard case .append(let adjustedTime) = decision else {
+      XCTFail("Expected append, got \(decision)", file: file, line: line)
+      return .invalid
+    }
+    return adjustedTime
+  }
+
+  private func floorToGrid(_ value: Int64, interval: Int64) -> Int64 {
+    (value / interval) * interval
+  }
+
+  private func ceilToGrid(_ value: Int64, interval: Int64) -> Int64 {
+    ((value + interval - 1) / interval) * interval
+  }
+
+  func testSharedVideoGapKeepsRepeatedFlipAlignmentBounded() throws {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+    let videoInterval: Int64 = 33
+    let audioInterval: Int64 = 23
+
+    for flipTime in stride(from: Int64(2_000), through: 20_000, by: 2_000) {
+      let lastVideoSource = floorToGrid(flipTime - 1, interval: videoInterval)
+      let lastAudioSource = floorToGrid(flipTime - 1, interval: audioInterval)
+      _ = appendedTime(video.adjustedTime(for: time(lastVideoSource)))
+      _ = appendedTime(audio.adjustedTime(for: time(lastAudioSource)))
+
+      video.markDiscontinuity()
+      audio.markDiscontinuity()
+
+      let stableVideoSource = ceilToGrid(
+        flipTime + 300,
+        interval: videoInterval
+      )
+      let sharedGap = try XCTUnwrap(
+        video.consumePendingDiscontinuityGap(at: time(stableVideoSource))
+      )
+      audio.applyPendingDiscontinuityGap(sharedGap)
+
+      // Production drops the first released audio buffer after applying the
+      // shared video gap, then resumes both tracks on their native sample grids.
+      let releasedAudioSource = ceilToGrid(
+        stableVideoSource,
+        interval: audioInterval
+      )
+      audio.observeDroppedSample(at: time(releasedAudioSource))
+
+      let nextVideo = appendedTime(
+        video.adjustedTime(for: time(stableVideoSource + videoInterval))
+      )
+      let nextAudio = appendedTime(
+        audio.adjustedTime(for: time(releasedAudioSource + audioInterval))
+      )
+      let alignmentMs = abs(
+        CMTimeGetSeconds(CMTimeSubtract(nextAudio, nextVideo)) * 1000
+      )
+
+      XCTAssertLessThanOrEqual(alignmentMs, 40)
+      XCTAssertEqual(CMTimeCompare(video.timeOffset, audio.timeOffset), 0)
+    }
+  }
+
+  func testInvalidSourceTimeKeepsPendingBoundaryArmed() {
+    var timeline = MediaTimelineState()
+    _ = appendedTime(timeline.adjustedTime(for: time(1_000)))
+    timeline.markDiscontinuity()
+
+    XCTAssertTrue(timeline.consumePendingDiscontinuity(at: .invalid))
+    XCTAssertTrue(timeline.discontinuityPending)
+    XCTAssertTrue(timeline.consumePendingDiscontinuity(at: time(1_200)))
+    XCTAssertFalse(timeline.discontinuityPending)
+  }
+
+  func testPauseResumeOffsetDoesNotGrowAcrossLaterCameraSwitches() throws {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+    let videoInterval: Int64 = 33
+    let audioInterval: Int64 = 23
+
+    let lastVideoBeforePause = floorToGrid(1_999, interval: videoInterval)
+    let lastAudioBeforePause = floorToGrid(1_999, interval: audioInterval)
+    _ = appendedTime(video.adjustedTime(for: time(lastVideoBeforePause)))
+    _ = appendedTime(audio.adjustedTime(for: time(lastAudioBeforePause)))
+
+    video.markDiscontinuity()
+    audio.markDiscontinuity()
+    let firstVideoAfterPause = ceilToGrid(2_600, interval: videoInterval)
+    let firstAudioAfterPause = ceilToGrid(2_600, interval: audioInterval)
+    XCTAssertTrue(
+      video.consumePendingDiscontinuity(at: time(firstVideoAfterPause))
+    )
+    XCTAssertTrue(
+      audio.consumePendingDiscontinuity(at: time(firstAudioAfterPause))
+    )
+
+    var nextVideoSource = firstVideoAfterPause + videoInterval
+    var nextAudioSource = firstAudioAfterPause + audioInterval
+    _ = appendedTime(video.adjustedTime(for: time(nextVideoSource)))
+    _ = appendedTime(audio.adjustedTime(for: time(nextAudioSource)))
+
+    let pauseOffsetDelta = CMTimeSubtract(
+      audio.timeOffset,
+      video.timeOffset
+    )
+    XCTAssertLessThanOrEqual(
+      abs(CMTimeGetSeconds(pauseOffsetDelta) * 1_000),
+      40
+    )
+
+    for flipTime in stride(from: Int64(4_000), through: 12_000, by: 2_000) {
+      nextVideoSource = floorToGrid(flipTime - 1, interval: videoInterval)
+      nextAudioSource = floorToGrid(flipTime - 1, interval: audioInterval)
+      _ = appendedTime(video.adjustedTime(for: time(nextVideoSource)))
+      _ = appendedTime(audio.adjustedTime(for: time(nextAudioSource)))
+
+      video.markDiscontinuity()
+      audio.markDiscontinuity()
+      let stableVideoSource = ceilToGrid(
+        flipTime + 300,
+        interval: videoInterval
+      )
+      let sharedGap = try XCTUnwrap(
+        video.consumePendingDiscontinuityGap(at: time(stableVideoSource))
+      )
+      audio.applyPendingDiscontinuityGap(sharedGap)
+
+      let releasedAudioSource = ceilToGrid(
+        stableVideoSource,
+        interval: audioInterval
+      )
+      audio.observeDroppedSample(at: time(releasedAudioSource))
+
+      let nextVideo = appendedTime(
+        video.adjustedTime(for: time(stableVideoSource + videoInterval))
+      )
+      let nextAudio = appendedTime(
+        audio.adjustedTime(for: time(releasedAudioSource + audioInterval))
+      )
+      let alignmentMs = abs(
+        CMTimeGetSeconds(CMTimeSubtract(nextAudio, nextVideo)) * 1_000
+      )
+
+      XCTAssertLessThanOrEqual(alignmentMs, 60)
+      XCTAssertEqual(
+        CMTimeCompare(
+          CMTimeSubtract(audio.timeOffset, video.timeOffset),
+          pauseOffsetDelta
+        ),
+        0
+      )
+    }
+  }
+
+  /// Repeated pause/resume cycles quantize each track's boundary to its own
+  /// callback grid, so the cross-track offset delta is a bounded random walk —
+  /// at most one video frame plus one audio buffer per cycle — never a
+  /// systematic drift. This is the acceptance model behind the QA rule that a
+  /// multi-pause take may legitimately exceed the single-pause 40 ms figure.
+  func testRepeatedPauseResumeCyclesKeepOffsetDeltaBoundedPerCycle() {
+    var video = MediaTimelineState()
+    var audio = MediaTimelineState()
+    let videoInterval: Int64 = 33
+    let audioInterval: Int64 = 23
+    let perCycleBoundMs = Double(videoInterval + audioInterval)
+
+    var previousDeltaMs = 0.0
+    var previousVideo: CMTime?
+    var previousAudio: CMTime?
+    var wallClock: Int64 = 1_000
+
+    for cycle in 1...10 {
+      let lastVideoBeforePause = floorToGrid(wallClock, interval: videoInterval)
+      let lastAudioBeforePause = floorToGrid(wallClock, interval: audioInterval)
+      let pausedVideo = appendedTime(
+        video.adjustedTime(for: time(lastVideoBeforePause))
+      )
+      let pausedAudio = appendedTime(
+        audio.adjustedTime(for: time(lastAudioBeforePause))
+      )
+      if let previousVideo {
+        XCTAssertGreaterThan(CMTimeCompare(pausedVideo, previousVideo), 0)
+      }
+      if let previousAudio {
+        XCTAssertGreaterThan(CMTimeCompare(pausedAudio, previousAudio), 0)
+      }
+
+      video.markDiscontinuity()
+      audio.markDiscontinuity()
+
+      // Vary the pause length off both grids so every cycle exercises a
+      // different quantization phase.
+      let resumeAt = wallClock + 700 + Int64(cycle) * 137
+      XCTAssertTrue(
+        video.consumePendingDiscontinuity(
+          at: time(ceilToGrid(resumeAt, interval: videoInterval))
+        )
+      )
+      XCTAssertTrue(
+        audio.consumePendingDiscontinuity(
+          at: time(ceilToGrid(resumeAt, interval: audioInterval))
+        )
+      )
+
+      let deltaMs =
+        CMTimeGetSeconds(CMTimeSubtract(audio.timeOffset, video.timeOffset))
+        * 1_000
+      XCTAssertLessThanOrEqual(
+        abs(deltaMs - previousDeltaMs),
+        perCycleBoundMs,
+        "cycle \(cycle) added more than one grid quantum of divergence"
+      )
+      XCTAssertLessThanOrEqual(
+        abs(deltaMs),
+        perCycleBoundMs * Double(cycle),
+        "cumulative divergence exceeded the per-cycle bound after \(cycle) cycles"
+      )
+      previousDeltaMs = deltaMs
+
+      let resumedVideoSource =
+        ceilToGrid(resumeAt, interval: videoInterval) + videoInterval
+      let resumedAudioSource =
+        ceilToGrid(resumeAt, interval: audioInterval) + audioInterval
+      previousVideo = appendedTime(
+        video.adjustedTime(for: time(resumedVideoSource))
+      )
+      previousAudio = appendedTime(
+        audio.adjustedTime(for: time(resumedAudioSource))
+      )
+
+      wallClock = resumeAt + 1_000
+    }
+  }
+}
+
+final class CameraSwitchAssetWriterSynchronizationTests: XCTestCase {
+
+  private enum TrackKind: Equatable { case video, audio }
+
+  private struct SourceEvent {
+    let kind: TrackKind
+    let sourceTime: CMTime
+
+    var seconds: Double { CMTimeGetSeconds(sourceTime) }
+  }
+
+  func testRepeatedSymmetricSwitchesProduceAlignedWriterTracks() throws {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("camera_switch_sync_\(UUID().uuidString).mov")
+    try? FileManager.default.removeItem(at: url)
+    defer { try? FileManager.default.removeItem(at: url) }
+
+    let writer = try AVAssetWriter(url: url, fileType: .mov)
+    let videoInput = AVAssetWriterInput(
+      mediaType: .video,
+      outputSettings: [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: 64,
+        AVVideoHeightKey: 64,
+      ]
+    )
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(
+      assetWriterInput: videoInput,
+      sourcePixelBufferAttributes: [
+        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+        kCVPixelBufferWidthKey as String: 64,
+        kCVPixelBufferHeightKey as String: 64,
+      ]
+    )
+    let audioInput = AVAssetWriterInput(
+      mediaType: .audio,
+      outputSettings: PrettyAwesomeCameraPlugin.recordingAudioSettings()
+    )
+    videoInput.expectsMediaDataInRealTime = false
+    audioInput.expectsMediaDataInRealTime = false
+    XCTAssertTrue(writer.canAdd(videoInput))
+    XCTAssertTrue(writer.canAdd(audioInput))
+    writer.add(videoInput)
+    writer.add(audioInput)
+    XCTAssertTrue(writer.startWriting())
+    writer.startSession(atSourceTime: .zero)
+
+    let timelines = try buildAdjustedTimelines()
+    XCTAssertLessThanOrEqual(
+      abs(CMTimeGetSeconds(CMTimeSubtract(
+        try XCTUnwrap(timelines.audio.last),
+        try XCTUnwrap(timelines.video.last)
+      ))),
+      0.040
+    )
+
+    let videoSamples = try timelines.video.map {
+      (buffer: try makePixelBuffer(), presentationTime: $0)
+    }
+    let audioSamples = try timelines.audio.map {
+      try makePCMSampleBuffer(startPTS: $0)
+    }
+    let videoFinished = expectation(description: "video input finishes")
+    let audioFinished = expectation(description: "audio input finishes")
+    var videoIndex = 0
+    var audioIndex = 0
+    videoInput.requestMediaDataWhenReady(
+      on: DispatchQueue(label: "camera_switch_sync.video")
+    ) {
+      while videoInput.isReadyForMoreMediaData && videoIndex < videoSamples.count {
+        let sample = videoSamples[videoIndex]
+        guard adaptor.append(
+          sample.buffer,
+          withPresentationTime: sample.presentationTime
+        ) else {
+          XCTFail("video append failed: \(String(describing: writer.error))")
+          videoInput.markAsFinished()
+          videoFinished.fulfill()
+          return
+        }
+        videoIndex += 1
+      }
+      if videoIndex == videoSamples.count {
+        videoInput.markAsFinished()
+        videoFinished.fulfill()
+      }
+    }
+    audioInput.requestMediaDataWhenReady(
+      on: DispatchQueue(label: "camera_switch_sync.audio")
+    ) {
+      while audioInput.isReadyForMoreMediaData && audioIndex < audioSamples.count {
+        guard audioInput.append(audioSamples[audioIndex]) else {
+          XCTFail("audio append failed: \(String(describing: writer.error))")
+          audioInput.markAsFinished()
+          audioFinished.fulfill()
+          return
+        }
+        audioIndex += 1
+      }
+      if audioIndex == audioSamples.count {
+        audioInput.markAsFinished()
+        audioFinished.fulfill()
+      }
+    }
+    wait(for: [videoFinished, audioFinished], timeout: 20)
+
+    let finished = expectation(description: "writer finishes")
+    writer.finishWriting { finished.fulfill() }
+    wait(for: [finished], timeout: 20)
+    XCTAssertEqual(
+      writer.status,
+      .completed,
+      "writer failed: \(String(describing: writer.error))"
+    )
+
+    let asset = AVURLAsset(url: url)
+    let videoTrack = try XCTUnwrap(asset.tracks(withMediaType: .video).first)
+    let audioTrack = try XCTUnwrap(asset.tracks(withMediaType: .audio).first)
+    let writerDelta = abs(
+      CMTimeGetSeconds(CMTimeSubtract(
+        audioTrack.timeRange.duration,
+        videoTrack.timeRange.duration
+      ))
+    )
+    XCTAssertLessThanOrEqual(writerDelta, 0.060)
+  }
+
+  private func buildAdjustedTimelines() throws -> (
+    video: [CMTime],
+    audio: [CMTime]
+  ) {
+    var events: [SourceEvent] = []
+    for frame in 0...(8 * 30) {
+      events.append(SourceEvent(
+        kind: .video,
+        sourceTime: CMTime(value: CMTimeValue(frame), timescale: 30)
+      ))
+    }
+    let audioBufferCount = Int(8.0 * 44_100.0 / 1_024.0)
+    for buffer in 0...audioBufferCount {
+      events.append(SourceEvent(
+        kind: .audio,
+        sourceTime: CMTime(
+          value: CMTimeValue(buffer * 1_024),
+          timescale: 44_100
+        )
+      ))
+    }
+    events.sort {
+      if $0.seconds == $1.seconds { return $0.kind == .video }
+      return $0.seconds < $1.seconds
+    }
+
+    var videoTimeline = MediaTimelineState()
+    var audioTimeline = MediaTimelineState()
+    var adjustedVideo: [CMTime] = []
+    var adjustedAudio: [CMTime] = []
+    let switchStarts = [2.0, 4.0, 6.0]
+    var nextSwitchIndex = 0
+    var stableVideoAfter: Double?
+    var audioReleasePending = false
+
+    for event in events {
+      if nextSwitchIndex < switchStarts.count,
+         event.seconds >= switchStarts[nextSwitchIndex] {
+        videoTimeline.markDiscontinuity()
+        audioTimeline.markDiscontinuity()
+        stableVideoAfter = switchStarts[nextSwitchIndex] + 0.300
+        nextSwitchIndex += 1
+      }
+
+      if let requiredStableVideoTime = stableVideoAfter {
+        if event.kind == .video, event.seconds >= requiredStableVideoTime {
+          let sharedGap = try XCTUnwrap(
+            videoTimeline.consumePendingDiscontinuityGap(
+              at: event.sourceTime
+            )
+          )
+          audioTimeline.applyPendingDiscontinuityGap(sharedGap)
+          stableVideoAfter = nil
+          audioReleasePending = true
+        }
+        continue
+      }
+
+      if event.kind == .audio, audioReleasePending {
+        audioTimeline.observeDroppedSample(at: event.sourceTime)
+        audioReleasePending = false
+        continue
+      }
+
+      let decision = event.kind == .video
+        ? videoTimeline.adjustedTime(for: event.sourceTime)
+        : audioTimeline.adjustedTime(for: event.sourceTime)
+      guard case .append(let adjustedTime) = decision else { continue }
+      if event.kind == .video {
+        adjustedVideo.append(adjustedTime)
+      } else {
+        adjustedAudio.append(adjustedTime)
+      }
+    }
+
+    return (adjustedVideo, adjustedAudio)
+  }
+
+  private func makePixelBuffer() throws -> CVPixelBuffer {
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+      kCFAllocatorDefault,
+      64,
+      64,
+      kCVPixelFormatType_32BGRA,
+      [
+        kCVPixelBufferCGImageCompatibilityKey as String: true,
+        kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+      ] as CFDictionary,
+      &pixelBuffer
+    )
+    XCTAssertEqual(status, kCVReturnSuccess)
+    let buffer = try XCTUnwrap(pixelBuffer)
+    CVPixelBufferLockBaseAddress(buffer, [])
+    if let baseAddress = CVPixelBufferGetBaseAddress(buffer) {
+      memset(baseAddress, 0x22, CVPixelBufferGetDataSize(buffer))
+    }
+    CVPixelBufferUnlockBaseAddress(buffer, [])
+    return buffer
+  }
+
+  private func makePCMSampleBuffer(startPTS: CMTime) throws -> CMSampleBuffer {
+    let sampleRate = 44_100.0
+    let channels: UInt32 = 1
+    let framesPerBuffer = 1_024
+    var asbd = AudioStreamBasicDescription(
+      mSampleRate: sampleRate,
+      mFormatID: kAudioFormatLinearPCM,
+      mFormatFlags: kLinearPCMFormatFlagIsSignedInteger | kLinearPCMFormatFlagIsPacked,
+      mBytesPerPacket: 2,
+      mFramesPerPacket: 1,
+      mBytesPerFrame: 2,
+      mChannelsPerFrame: channels,
+      mBitsPerChannel: 16,
+      mReserved: 0
+    )
+    var formatDescription: CMAudioFormatDescription?
+    XCTAssertEqual(
+      CMAudioFormatDescriptionCreate(
+        allocator: kCFAllocatorDefault,
+        asbd: &asbd,
+        layoutSize: 0,
+        layout: nil,
+        magicCookieSize: 0,
+        magicCookie: nil,
+        extensions: nil,
+        formatDescriptionOut: &formatDescription
+      ),
+      noErr
+    )
+
+    let byteCount = framesPerBuffer * 2
+    var blockBuffer: CMBlockBuffer?
+    XCTAssertEqual(
+      CMBlockBufferCreateWithMemoryBlock(
+        allocator: kCFAllocatorDefault,
+        memoryBlock: nil,
+        blockLength: byteCount,
+        blockAllocator: kCFAllocatorDefault,
+        customBlockSource: nil,
+        offsetToData: 0,
+        dataLength: byteCount,
+        flags: 0,
+        blockBufferOut: &blockBuffer
+      ),
+      noErr
+    )
+    let silence = [UInt8](repeating: 0, count: byteCount)
+    let unwrappedBlockBuffer = try XCTUnwrap(blockBuffer)
+    XCTAssertEqual(
+      silence.withUnsafeBytes {
+        CMBlockBufferReplaceDataBytes(
+          with: $0.baseAddress!,
+          blockBuffer: unwrappedBlockBuffer,
+          offsetIntoDestination: 0,
+          dataLength: byteCount
+        )
+      },
+      noErr
+    )
+
+    var sampleBuffer: CMSampleBuffer?
+    XCTAssertEqual(
+      CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+        allocator: kCFAllocatorDefault,
+        dataBuffer: unwrappedBlockBuffer,
+        formatDescription: try XCTUnwrap(formatDescription),
+        sampleCount: framesPerBuffer,
+        presentationTimeStamp: startPTS,
+        packetDescriptions: nil,
+        sampleBufferOut: &sampleBuffer
+      ),
+      noErr
+    )
+    return try XCTUnwrap(sampleBuffer)
+  }
+}
+
 // MARK: - AVAssetWriter audio-gap behavior probe
 //
 // PURPOSE

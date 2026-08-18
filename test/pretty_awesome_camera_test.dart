@@ -44,6 +44,9 @@ class MockPrettyAwesomeCameraPlatform
   }
 
   @override
+  Map<String, Object?>? lastRecordingDiagnostics(int cameraId) => null;
+
+  @override
   Future<void> pauseRecording(int cameraId) {
     throw UnimplementedError();
   }

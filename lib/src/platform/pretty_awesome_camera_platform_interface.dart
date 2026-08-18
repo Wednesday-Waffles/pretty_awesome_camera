@@ -96,6 +96,10 @@ abstract class PrettyAwesomeCameraPlatform extends PlatformInterface {
     throw UnimplementedError('stopRecording() has not been implemented.');
   }
 
+  /// Diagnostics returned with the most recent successful stop, when the
+  /// native implementation supports them. Reading does not clear the value.
+  Map<String, Object?>? lastRecordingDiagnostics(int cameraId) => null;
+
   /// Pauses recording on the camera with the given ID.
   Future<void> pauseRecording(int cameraId) {
     throw UnimplementedError('pauseRecording() has not been implemented.');
